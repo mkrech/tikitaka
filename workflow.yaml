@@ -1,0 +1,99 @@
+# tikitaka – Workflow-Konfiguration
+#
+# Rollen -> Harness. Kombinationen frei tauschbar, z.B.
+#   claude + opencode, opencode + opencode, kiro + opencode ...
+
+agents:
+  # Builder: Qwen lokal (LM Studio) · Reviewer: DeepSeek auf Hagrid -> unterschiedliche Modelle
+  spec_builder:  { harness: opencode, model: "lmstudio/qwen3.8-27b-splash", prompt: prompts/spec-builder.md }
+  spec_reviewer: { harness: opencode, model: "hagrid-remote-DeepSeek-V4.1-Flash-1017/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
+  code_builder:  { harness: opencode, model: "lmstudio/qwen3.8-27b-splash", prompt: prompts/code-builder.md }
+  code_reviewer: { harness: opencode, model: "hagrid-remote-DeepSeek-V4.1-Flash-1017/DeepSeek-V4.1-Flash-1017", prompt: prompts/code-reviewer.md, readonly: true }
+  # Optional pro Agent: model: "provider/model" (opencode: `opencode models` listet die verfügbaren).
+  # Tipp: Builder und Reviewer mit unterschiedlichen Modellen -> unterschiedliche blinde Flecken.
+
+# Agenten-Runden Builder -> Reviewer pro Durchlauf
+max_agent_rounds: 2
+# Runden nach Human-Feedback (nur zum Absichern)
+rounds_after_human: 1
+# Wie oft der Builder rote Checks reparieren darf (zählt nicht als Review-Runde)
+max_check_fixes: 2
+# Welche Severities eine neue Runde auslösen
+blocking_severities: [blocker, major]
+timeout_seconds: 1800
+
+human_gates:
+  after_spec: true    # Freigabe der Spec vor dem Code
+  after_code: true    # Freigabe des Codes vor Archiv/Merge
+  on_conflict: true   # Builder/Reviewer nach max. Runden uneinig -> an dich
+
+# Deterministische Checks vor jedem LLM-Review. {change} wird ersetzt.
+# Laufen im Projektverzeichnis.
+checks:
+  spec:
+    - openspec validate {change} --strict
+  code:
+    - uv run pytest -q
+
+# Nach finaler Freigabe `openspec archive` ausführen
+archive_on_done: true
+# Agenten melden Ergebnisse über den tikitaka-MCP-Server (Fallback: JSON-Block im Text)
+mcp: true
+# macOS-Benachrichtigung an Human Gates
+notify: true
+
+# Harness-Aufrufe. Platzhalter: {prompt}, {prompt_file}, {model}
+# write_args  -> Builder (darf Dateien ändern)
+# readonly_args -> Reviewer (nur lesen)
+# session_args / resume_args -> Reviewer-Sitzung mit eigener ID starten / fortsetzen (Rückfragen mit vollem Kontext).
+#   Platzhalter: {session_uuid} (UUID), {session_hex} (UUID ohne Bindestriche). Ohne sie: Rückfrage mit dem Ende der Antwort.
+# mcp_args / mcp_env -> tikitaka-MCP-Server anbinden (submit_review/submit_build, ask_human).
+#   Platzhalter: {mcp_claude_config} (Datei im mcpServers-Format), {mcp_opencode_config} (JSON-Inhalt)
+harnesses:
+  claude:
+    cmd: [claude, -p, "{prompt}"]
+    session_args: [--session-id, "{session_uuid}"]
+    resume_args: [--resume, "{session_uuid}"]
+    model_args: [--model, "{model}"]
+    write_args:
+      - --permission-mode
+      - acceptEdits
+      - --allowedTools
+      - "Bash(uv:*)"
+      - "Bash(python:*)"
+      - "Bash(openspec:*)"
+      - "Bash(git status:*)"
+      - "Bash(git diff:*)"
+      - "Bash(ls:*)"
+      - "Bash(mkdir:*)"
+    readonly_args:
+      - --allowedTools
+      - Read
+      - Grep
+      - Glob
+      - "Bash(git diff:*)"
+      - "Bash(git log:*)"
+      - "Bash(openspec validate:*)"
+      - "Bash(openspec show:*)"
+      - "Bash(uv run pytest:*)"
+      - --disallowedTools
+      - Edit
+      - Write
+      - NotebookEdit
+    mcp_args: [--mcp-config, "{mcp_claude_config}", --allowedTools, "mcp__tikitaka"]
+
+  opencode:
+    cmd: [opencode, run, "{prompt}"]
+    session_args: [--session, "ses_{session_hex}"]
+    resume_args: [--session, "ses_{session_hex}"]
+    model_args: [-m, "{model}"]
+    write_args: [--agent, build]
+    readonly_args: [--agent, plan]
+    mcp_env: { OPENCODE_CONFIG_CONTENT: "{mcp_opencode_config}" }
+
+  # Kiro CLI – Flags vor Nutzung mit `kiro-cli chat --help` prüfen
+  kiro:
+    cmd: [kiro-cli, chat, --no-interactive, "{prompt}"]
+    model_args: [--model, "{model}"]
+    write_args: [--trust-all-tools]
+    readonly_args: [--trust-tools, "fs_read"]

@@ -1,0 +1,185 @@
+"""Startet einen Agenten in seinem Harness (claude, opencode, kiro, ...) als Subprozess."""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+
+from .config import AgentConfig
+
+# CSI- (Farben, Cursor) und OSC-Sequenzen (Titel, Links)
+TERM_GRACE_SECONDS = 5
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI.sub("", text)
+
+
+@dataclass
+class AgentResult:
+    returncode: int
+    output: str
+    timed_out: bool = False
+
+
+def render_prompt(template: str, values: dict[str, object]) -> str:
+    """Ersetzt {{name}}-Platzhalter. Einfache Klammern (z.B. JSON) bleiben unberührt."""
+    for key, value in values.items():
+        template = template.replace("{{" + key + "}}", str(value))
+    return template
+
+
+def project_env(cwd: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Umgebung für Agenten/Checks im Zielprojekt – ohne das venv von tikitaka selbst."""
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    # PWD mitsetzen: manche Harnesses (z.B. opencode) lesen das Projekt aus PWD statt aus dem echten cwd
+    return {**env, **(extra or {}), "PWD": str(cwd)}
+
+
+def can_continue(harness: dict) -> bool:
+    return bool(harness.get("resume_args"))
+
+
+def supports_mcp(harness: dict) -> bool:
+    return bool(harness.get("mcp_args") or harness.get("mcp_env"))
+
+
+def _substitute(value: object, subst: dict[str, str]) -> str:
+    text = str(value)
+    for key, replacement in subst.items():
+        text = text.replace(key, replacement)
+    return text
+
+
+def build_command(
+    harness: dict, agent: AgentConfig, prompt: str, prompt_file: Path, *,
+    session_id: str | None = None, resume: bool = False, mcp: dict[str, str] | None = None,
+) -> list[str]:
+    args = list(harness["cmd"])
+    args += harness.get("readonly_args" if agent.readonly else "write_args") or []
+    if agent.model:
+        args += harness.get("model_args") or []
+    if session_id:
+        args += harness.get("resume_args" if resume else "session_args") or []
+    if mcp is not None:
+        args += harness.get("mcp_args") or []
+    subst = {
+        "{prompt}": prompt, "{prompt_file}": str(prompt_file), "{model}": agent.model or "",
+        "{session_uuid}": session_id or "", "{session_hex}": (session_id or "").replace("-", ""), **(mcp or {}),
+    }
+    return [_substitute(arg, subst) for arg in args]
+
+
+def mcp_env(harness: dict, mcp: dict[str, str] | None) -> dict[str, str]:
+    """Umgebungsvariablen, über die ein Harness den MCP-Server findet (z.B. OPENCODE_CONFIG_CONTENT)."""
+    if mcp is None:
+        return {}
+    return {key: _substitute(value, mcp) for key, value in (harness.get("mcp_env") or {}).items()}
+
+
+def harness_available(harness: dict) -> bool:
+    return shutil.which(str(harness["cmd"][0])) is not None
+
+
+def _stop_group(proc: subprocess.Popen) -> None:
+    """Beendet den Agenten samt Kindprozessen: erst freundlich, nach TERM_GRACE_SECONDS hart."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=TERM_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_shell(cmd: str, cwd: Path, timeout: int) -> tuple[int | None, str]:
+    """Führt einen Check aus und liefert Exit-Code und Ausgabe. Exit-Code None heißt: Timeout."""
+    proc = subprocess.Popen(
+        cmd, shell=True, cwd=cwd, env=project_env(cwd),
+        stdin=subprocess.DEVNULL,  # z.B. eine REPL ohne Argument darf nicht auf Eingaben warten
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, errors="replace",
+        start_new_session=True,  # eigene Prozessgruppe: Timeout und Abbruch erreichen auch Kindprozesse
+    )
+    try:
+        output, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, output
+    except subprocess.TimeoutExpired:
+        _stop_group(proc)
+        try:
+            output, _ = proc.communicate(timeout=TERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            output = ""
+        return None, output
+    except BaseException:
+        _stop_group(proc)
+        raise
+
+
+def run_agent(
+    harness: dict,
+    agent: AgentConfig,
+    prompt: str,
+    *,
+    cwd: Path,
+    log_file: Path,
+    env: dict[str, str],
+    timeout: int,
+    session_id: str | None = None,
+    resume: bool = False,
+    mcp: dict[str, str] | None = None,
+) -> AgentResult:
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file = log_file.with_suffix(".prompt.md")
+    prompt_file.write_text(prompt)
+    cmd = build_command(harness, agent, prompt, prompt_file, session_id=session_id, resume=resume, mcp=mcp)
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=project_env(cwd, {**env, **mcp_env(harness, mcp)}),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",  # Ein Byte, das kein UTF-8 ist, darf den Lesethread nicht beenden
+        bufsize=1,
+        start_new_session=True,  # eigene Prozessgruppe: Abbruch und Timeout erreichen auch Kindprozesse
+    )
+    lines: list[str] = []
+
+    def pump() -> None:
+        with log_file.open("w") as log:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                clean = strip_ansi(line)  # Log, state.json und JSON-Parsing ohne Farbcodes
+                lines.append(clean)
+                log.write(clean)
+                log.flush()
+                sys.stdout.write("    │ " + line)  # Terminal behält die Farben
+                sys.stdout.flush()
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _stop_group(proc)
+    except BaseException:  # z.B. Ctrl+C: Der Agent darf nach dem Abbruch nichts mehr ändern
+        _stop_group(proc)
+        raise
+    reader.join(timeout=5)
+    return AgentResult(proc.returncode, "".join(lines), timed_out)
