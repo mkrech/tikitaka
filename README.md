@@ -1,34 +1,34 @@
 # tikitaka
 
-Orchestrator für einen **Builder/Reviewer-Workflow** mit Coding-Agents in beliebigen Harnesses
-(Claude Code, OpenCode, Kiro, …), **OpenSpec** für die Spezifikation und **Human Gates**.
+Orchestrator for a **builder/reviewer workflow** with coding agents in arbitrary harnesses
+(Claude Code, OpenCode, Kiro, …), **OpenSpec** for the specification and **human gates**.
 
 ```
-Spec-Builder ⇄ Spec-Reviewer (max. 2 Runden)  ──▶  HUMAN GATE Spec
-      ▲                                              │ changes → Feedback → Builder → Checks → 1 Review-Runde → Gate
+Spec builder ⇄ Spec reviewer (max. 2 rounds)  ──▶  HUMAN GATE spec
+      ▲                                              │ changes → feedback → builder → checks → 1 review round → gate
       └──────────────────────────────────────────────┘ approve ↓
-Code-Builder ⇄ Code-Reviewer (max. 2 Runden)  ──▶  HUMAN GATE Code
-      ▲                                              │ changes / spec_change (zurück zur Spec)
+Code builder ⇄ Code reviewer (max. 2 rounds)  ──▶  HUMAN GATE code
+      ▲                                              │ changes / spec_change (back to spec)
       └──────────────────────────────────────────────┘ approve → openspec archive → done
 ```
 
-- Vor jedem LLM-Review laufen **deterministische Checks** (`openspec validate`, Tests). Rote Checks gehen direkt zurück an den Builder und zählen nicht als Runde.
-- Reviews kommen **strukturiert** mit Severity (MCP-Tool `submit_review`, sonst JSON-Block im Text). Nur `blocker`/`major` lösen eine neue Runde aus, `minor` landet im Gate-Dokument.
-- Builder dürfen Reviewer-Findings begründet ablehnen (`wont_fix`), **Human-Feedback ist verbindlich**.
-- Kein Konsens nach max. Runden → **Konflikt → Human Gate**. Dasselbe gilt, wenn der Builder in einer Phase gar nichts ändert
-  oder ein Review sich auch auf Rückfrage widerspricht.
-- Jede Runde ist ein **Git-Commit** im Zielprojekt. Human-Feedback steht in der Commit-Message.
-- Zustand in `<projekt>/.tikitaka/runs/<change>/state.json` → `resume` jederzeit möglich.
+- **Deterministic checks** (`openspec validate`, tests) run before every LLM review. Red checks go straight back to the builder and do not count as a round.
+- Reviews come back **structured** with a severity (MCP tool `submit_review`, otherwise a JSON block in the text). Only `blocker`/`major` trigger a new round, `minor` ends up in the gate document.
+- Builders may reject reviewer findings with a justification (`wont_fix`), **human feedback is binding**.
+- No consensus after the maximum number of rounds → **conflict → human gate**. The same applies if the builder changes nothing at all in a phase
+  or if a review contradicts itself even after being asked again.
+- Every round is a **git commit** in the target project. Human feedback is recorded in the commit message.
+- State lives in `<project>/.tikitaka/runs/<change>/state.json` → `resume` is possible at any time.
 
 ## Setup
 
 ```bash
 uv sync
-npm install -g @fission-ai/openspec   # falls noch nicht installiert
-uv run tikitaka doctor               # prüft Harnesses + Tools
+npm install -g @fission-ai/openspec   # if not installed yet
+uv run tikitaka doctor               # checks harnesses + tools
 ```
 
-Rollen und Harnesses stehen in [workflow.yaml](workflow.yaml). Kombination wechseln = eine Zeile ändern:
+Roles and harnesses are configured in [workflow.yaml](workflow.yaml). Switching the combination = changing a single line:
 
 ```yaml
 agents:
@@ -36,30 +36,30 @@ agents:
   spec_reviewer: { harness: opencode, prompt: prompts/spec-reviewer.md, readonly: true }
 ```
 
-Die Prompts der vier Rollen liegen in [prompts/](prompts/).
+The prompts for the four roles live in [prompts/](prompts/).
 
-## Beispiel: Taschenrechner
+## Example: calculator
 
 ```bash
 uv run tikitaka init ../calculator
 ```
 
 ```bash
-uv run tikitaka run ../calculator --change add-calculator --idea "Ein Kommandozeilen-Taschenrechner in Python (uv, pytest). Grundrechenarten, Klammern, Punkt-vor-Strich, Dezimalzahlen. Fehlermeldung bei Division durch 0 und ungültiger Eingabe. Interaktiver REPL-Modus und Einmalaufruf: calc '2+3*4'."
+uv run tikitaka run ../calculator --change add-calculator --idea "A command-line calculator in Python (uv, pytest). Basic arithmetic operations, parentheses, operator precedence, decimals. Error message on division by 0 and on invalid input. Interactive REPL mode and one-shot invocation: calc '2+3*4'."
 ```
 
-Statt `--idea` geht auch `--idea-file <datei>`. Gibt es den Change schon, setzt `run` den Lauf fort und ignoriert die
-neue Idee. Der Pfad zur `workflow.yaml` kommt aus `--config`, sonst aus `TIKITAKA_CONFIG`, sonst aus dem aktuellen Verzeichnis.
+Instead of `--idea` you can also pass `--idea-file <file>`. If the change already exists, `run` resumes the run and ignores the
+new idea. The path to `workflow.yaml` comes from `--config`, otherwise from `TIKITAKA_CONFIG`, otherwise from the current directory.
 
-Die globalen Code-Checks in `workflow.yaml` (`uv run pytest -q`) passen zu einem Python-Projekt.
-Pro Projekt lassen sie sich überschreiben (siehe unten).
+The global code checks in `workflow.yaml` (`uv run pytest -q`) suit a Python project.
+Per project they can be overridden (see below).
 
-### Projekt-Konfiguration und Smoke-Checks
+### Project configuration and smoke checks
 
-`init` legt im Zielprojekt eine auskommentierte `.tikitaka.yaml` an. Sie darf `checks`,
+`init` creates a commented-out `.tikitaka.yaml` in the target project. It may override `checks`,
 `max_agent_rounds`, `rounds_after_human`, `max_check_fixes`, `blocking_severities`, `timeout_seconds`,
-`human_gates`, `archive_on_done` und je Rolle `agents.<rolle>.model` / `.harness` überschreiben.
-Prompts und Harness-Definitionen bleiben global. `checks.<phase>` ersetzt die globalen Checks genau dieser Phase.
+`human_gates`, `archive_on_done` and, per role, `agents.<role>.model` / `.harness`.
+Prompts and harness definitions stay global. `checks.<phase>` replaces the global checks of exactly that phase.
 
 ```yaml
 agents:
@@ -67,78 +67,78 @@ agents:
   code_reviewer: { model: "hagrid-remote-GLM-5.3-Flash-EXL3/GLM-5.3-Flash-EXL3" }
 ```
 
-Neben Shell-Befehlen (müssen Exit 0 liefern) gibt es **Smoke-Checks**: ein Befehl, der für mehrere
-Eingaben läuft und dessen Ausgabe geprüft wird – z.B. „keine Fehleingabe darf einen Traceback zeigen“:
+Besides shell commands (which must exit 0) there are **smoke checks**: a single command that runs for several
+inputs and whose output is inspected – e.g. "no invalid input may produce a traceback":
 
 ```yaml
 checks:
   code:
     - uv run pytest -q
-    - name: keine Tracebacks bei Fehleingaben
-      run: uv run -q calc {input}        # {input} wird shell-sicher eingesetzt
+    - name: no tracebacks on invalid input
+      run: uv run -q calc {input}        # {input} is substituted shell-safely
       inputs: ["2²", "1/0", "abc", "((1", "1.2.3", ".5", ""]
       must_not_contain: [Traceback]
-      # must_contain: [...]   check_exit: true  (Exit 0 verlangen; Standard: Exit-Code egal)
+      # must_contain: [...]   check_exit: true  (require exit 0; default: exit code ignored)
 ```
 
-Schlägt ein Smoke-Check fehl, bekommt der Builder die betroffenen Eingaben samt Ausgabe als Feedback.
+If a smoke check fails, the builder receives the affected inputs together with their output as feedback.
 
-### Reviews über mehrere Runden
+### Reviews across multiple rounds
 
-Ab Runde 2 bekommt der Reviewer alle Findings der Vorrunden und muss noch offene erneut melden.
-Lässt er ein früheres Minor-Finding trotzdem fallen, erscheint es im Gate-Dokument unter
-**„Frühere Minor-Findings – nicht erneut gemeldet“**, damit nichts still verschwindet
-(abgeglichen über Text oder ID + Datei).
+From round 2 on, the reviewer receives all findings from previous rounds and must report any that are still open again.
+If it nevertheless drops an earlier minor finding, that finding shows up in the gate document under
+**"Frühere Minor-Findings – nicht erneut gemeldet"** (the literal heading the code emits), so that nothing disappears silently
+(matched by text or ID + file).
 
-Ab dem zweiten Review einer Phase prüft der Reviewer nur den **Diff seit seinem letzten Review**
-(`<schritt>.diff`); der Gesamtdiff der Phase liegt als `<schritt>.full.diff` zum Nachschlagen daneben.
-Nach einem Human Gate bekommt er außerdem dein Feedback und prüft, ob es umgesetzt ist.
-Generierte Dateien (`__pycache__/`, `*.pyc`, `.venv/`, `node_modules/`, Lockfiles …) sind aus dem
-Reviewer-Diff ausgeschlossen.
+From the second review of a phase on, the reviewer only inspects the **diff since its last review**
+(`<step>.diff`); the full diff of the phase is kept next to it as `<step>.full.diff` for reference.
+After a human gate it also receives your feedback and checks whether it has been implemented.
+Generated files (`__pycache__/`, `*.pyc`, `.venv/`, `node_modules/`, lockfiles …) are excluded from the
+reviewer diff.
 
-### MCP-Server für die Agenten
+### MCP server for the agents
 
-Builder und Reviewer melden ihre Ergebnisse über den MCP-Server `tikitaka`
-([mcp_server.py](src/tikitaka/mcp_server.py)) statt als JSON-Block im Text. tikitaka startet
-ihn pro Agentenaufruf und meldet ihn dem Harness an (opencode: `OPENCODE_CONFIG_CONTENT`,
-claude: `--mcp-config`). Die Tool-Argumente sind schema-geprüft – ein ungültiges `verdict` oder eine
-falsche `severity` lehnt der Server sofort ab und der Agent korrigiert sich.
+Builders and reviewers report their results through the MCP server `tikitaka`
+([mcp_server.py](src/tikitaka/mcp_server.py)) instead of a JSON block in the text. tikitaka starts
+it for each agent invocation and registers it with the harness (opencode: `OPENCODE_CONFIG_CONTENT`,
+claude: `--mcp-config`). The tool arguments are schema-checked – an invalid `verdict` or a
+wrong `severity` is rejected by the server immediately and the agent corrects itself.
 
-| Tool | Rolle | Zweck |
+| Tool | Role | Purpose |
 |---|---|---|
-| `submit_review(verdict, summary, findings)` | Reviewer | Review abliefern |
-| `submit_build(summary, addressed, wont_fix, questions)` | Builder | Zusammenfassung abliefern |
-| `get_previous_findings()` | Reviewer | Findings der Vorrunden |
-| `get_human_feedback()` | beide | Feedback aus dem letzten Human Gate |
-| `ask_human(question)` | beide | Frage an dich – erscheint gesammelt im Gate-Dokument |
+| `submit_review(verdict, summary, findings)` | Reviewer | Deliver the review |
+| `submit_build(summary, addressed, wont_fix, questions)` | Builder | Deliver the summary |
+| `get_previous_findings()` | Reviewer | Findings from previous rounds |
+| `get_human_feedback()` | both | Feedback from the last human gate |
+| `ask_human(question)` | both | Question to you – collected and shown in the gate document |
 
-Die Ergebnisse liegen in `<run>/mcp/<schritt>.result.json`, Fragen in `<run>/mcp/questions.jsonl`.
-Ruft ein Agent das Tool nicht auf (oder hat der Harness keine `mcp_args`/`mcp_env`), greift weiter
-der JSON-Block im Text samt Nachforderung. Abschalten: `mcp: false` in `workflow.yaml`.
+The results are stored in `<run>/mcp/<step>.result.json`, questions in `<run>/mcp/questions.jsonl`.
+If an agent does not call the tool (or the harness has no `mcp_args`/`mcp_env`), the JSON block in the text
+is still used, including a follow-up request. To disable: `mcp: false` in `workflow.yaml`.
 
-### Coach: tikitaka aus Claude Code oder OpenCode steuern
+### Coach: steering tikitaka from Claude Code or OpenCode
 
-`tikitaka coach` ist ein zweiter MCP-Server – für **dich** statt für die Agenten. Damit fragst du in einer
-Claude-Code- oder OpenCode-Sitzung z.B. „Wie läuft calculator-4?“, „Was steht am Gate?“ oder „Starte einen Lauf
-für …“. Der Server liefert Fakten aus den Run-Dateien; die Einordnung macht das Modell deiner Sitzung.
+`tikitaka coach` is a second MCP server – for **you** instead of for the agents. In a
+Claude Code or OpenCode session it lets you ask things like "How is calculator-4 doing?", "What is waiting at the gate?" or "Start a run
+for …". The server provides facts from the run files; interpretation is up to the model of your session.
 
-| Tool | Zweck |
+| Tool | Purpose |
 |---|---|
-| `list_runs(project)` | Läufe eines Projekts, läuft gerade / wartet auf dich |
-| `status(project, change)` | Phase, aktueller Agent (Laufzeit, Log-Aktivität), offenes Gate, Minuten pro Rolle, letzte Checks/Reviews |
-| `log_tail(project, change, lines, step?)` | Ende eines Agenten-Logs |
-| `gate_briefing(project, change)` | Alles für die Gate-Entscheidung: Konflikt, Findings, Fragen der Agenten (dedupliziert), Builder, Checks, entfernte Tests, Schreibschutz-Verletzungen |
-| `run_smoke(project, extra_inputs?)` | Programm mit den Smoke-Eingaben aus `.tikitaka.yaml` (plus eigenen) ausprobieren |
-| `compare_runs(runs)` | Läufe vergleichen: Agentenminuten, Zyklen, Entscheidungen, Findings, Nachforderungen, Fehler |
-| `list_models(filter?)` | Modell-IDs, die OpenCode kennt (`provider/model`) |
-| `get_agents(project)` / `set_agents(project, models, harness?)` | Modelle je Rolle eines Projekts lesen/setzen – auch `builder`, `reviewer`, `all`; unbekannte Modelle werden mit Vorschlägen abgelehnt. Gilt erst ab dem nächsten Start oder `resume_run`, nicht für einen laufenden Lauf |
-| `start_run` / `resume_run` / `stop_run` | Läufe im Hintergrund starten (optional mit `models`), fortsetzen, anhalten (wie Ctrl+C) |
-| `decide(project, change, decision, confirmed_by_human, feedback?)` | Entscheidung ins Gate schreiben – **nur nach deiner Bestätigung** |
+| `list_runs(project)` | Runs of a project, currently running / waiting for you |
+| `status(project, change)` | Phase, current agent (runtime, log activity), open gate, minutes per role, latest checks/reviews |
+| `log_tail(project, change, lines, step?)` | End of an agent log |
+| `gate_briefing(project, change)` | Everything needed for the gate decision: conflict, findings, agent questions (deduplicated), builder, checks, removed tests, write-protection violations |
+| `run_smoke(project, extra_inputs?)` | Try the program with the smoke inputs from `.tikitaka.yaml` (plus your own) |
+| `compare_runs(runs)` | Compare runs: agent minutes, cycles, decisions, findings, follow-up requests, errors |
+| `list_models(filter?)` | Model IDs known to OpenCode (`provider/model`) |
+| `get_agents(project)` / `set_agents(project, models, harness?)` | Read/set the models per role of a project – also `builder`, `reviewer`, `all`; unknown models are rejected with suggestions. Takes effect from the next start or `resume_run`, not for a run in progress |
+| `start_run` / `resume_run` / `stop_run` | Start runs in the background (optionally with `models`), resume them, stop them (like Ctrl+C) |
+| `decide(project, change, decision, confirmed_by_human, feedback?)` | Write the decision into the gate – **only after your confirmation** |
 
-Hintergrund-Läufe schreiben ihre Ausgabe nach `<run>/orchestrator.log`. Einbinden (Pfade anpassen):
+Background runs write their output to `<run>/orchestrator.log`. Registering it (adjust the paths):
 
 ```bash
-claude mcp add tikitaka-coach -- uv run --directory /pfad/zu/tikitaka tikitaka --config /pfad/zu/tikitaka/workflow.yaml coach
+claude mcp add tikitaka-coach -- uv run --directory /path/to/tikitaka tikitaka --config /path/to/tikitaka/workflow.yaml coach
 ```
 
 OpenCode (`~/.config/opencode/opencode.jsonc`):
@@ -147,66 +147,66 @@ OpenCode (`~/.config/opencode/opencode.jsonc`):
 "mcp": {
   "tikitaka-coach": {
     "type": "local",
-    "command": ["uv", "run", "--directory", "/pfad/zu/tikitaka", "tikitaka",
-                "--config", "/pfad/zu/tikitaka/workflow.yaml", "coach"]
+    "command": ["uv", "run", "--directory", "/path/to/tikitaka", "tikitaka",
+                "--config", "/path/to/tikitaka/workflow.yaml", "coach"]
   }
 }
 ```
 
-### Robustheit
+### Robustness
 
-- **Fehlendes Review-JSON:** Erst wird nur das Ergebnis nachgefordert (Sekunden), erst danach das Review wiederholt.
-  Hat der Harness `resume_args` (opencode, claude), wird dafür die Sitzung des Reviewers über ihre eigene ID
-  fortgesetzt – er hat seine ganze Prüfung noch im Kontext, und eine parallele Sitzung im selben Verzeichnis bleibt
-  unberührt. Sonst bekommt er das Ende seiner Antwort.
-- **Widersprüchliches Review:** `approve` mit blockierenden Findings oder `changes_requested` ohne sie führt zu einer
-  Rückfrage. Bleibt `changes_requested` ohne blockierendes Finding, geht es als Konflikt ans Gate; bleibt `approve` mit
-  blockierenden Findings, zählen die Findings.
-- **Builder ohne Änderungen:** Ist in der ganzen Phase noch nichts geändert, gibt es kein Review, sondern direkt einen
-  Konflikt. Spätere Runden dürfen leer sein, etwa wenn der Builder alle Findings begründet ablehnt.
-- **Entfernte Tests:** Das Code-Gate nennt gelöschte Testdateien und solche, die netto mindestens 5 Zeilen kleiner
-  wurden. Das ist ein Hinweis zum Prüfen, kein Fehler: Umbenannte Dateien und Änderungen an Testinhalten erkennt er nicht.
-- **Commit-Bereich im Reviewer-Prompt:** Alles ist bereits committet; der Prompt nennt den Bereich (`abc123..HEAD`),
-  damit ein `git diff` ohne Bereich den Reviewer nicht ins Leere laufen lässt.
-- **Builder-Timeout:** Hat der Builder bereits Dateien geändert, laufen trotzdem die Checks – sind sie grün, geht es zum Review.
-  Ohne Änderungen bleibt ein Timeout ein Agent-Fehler (`resume` nach Behebung).
-- **Checks** laufen mit leerem stdin – ein Programm, das ohne Argument eine REPL startet, kann nicht hängen.
-- **`.gitignore`:** tikitaka ergänzt im Zielprojekt fehlende Standardeinträge (`.tikitaka/`, `__pycache__/`,
-  `*.pyc`, `.venv/`, `.pytest_cache/`, `node_modules/`, `dist/`, `build/`, `.DS_Store`, `.env`, `.env.*` außer
-  `.env.example`), überschreibt aber nichts.
-- **Ein Lauf pro Projekt:** Läufe teilen sich Working Tree und Commits. Ein zweiter wird abgelehnt, solange der erste
-  aktiv ist, auch während er am Human Gate wartet. Mit Ctrl+C oder `stop_run` wird das Projekt wieder frei.
-- **Sauberer Start:** Ein neuer Lauf startet nicht, wenn das Projekt offene Änderungen hat, weil der erste Commit sie
-  mitnehmen würde. Ausgenommen sind die Dateien von tikitaka und was `init` frisch anlegt (`openspec/`, `AGENTS.md`).
-  Bewusst übergehen: `tikitaka run … --allow-dirty` (nicht über den Coach). `resume` prüft das nicht.
-- **Check-Timeout:** Läuft ein Check länger als 15 Minuten, wird er samt Kindprozessen beendet und zählt als rot.
-- **Ausgaben, die kein UTF-8 sind,** werden ersetzt, statt den Lauf abzubrechen.
+- **Missing review JSON:** First only the result is requested again (a matter of seconds), only then is the review repeated.
+  If the harness has `resume_args` (opencode, claude), the reviewer's session is resumed through its own ID
+  for this – it still has its entire review in context, and a parallel session in the same directory stays
+  untouched. Otherwise it receives the end of its answer.
+- **Contradictory review:** `approve` with blocking findings, or `changes_requested` without any, leads to a
+  follow-up question. If `changes_requested` remains without a blocking finding, it goes to the gate as a conflict; if `approve` remains with
+  blocking findings, the findings count.
+- **Builder without changes:** If nothing has been changed in the whole phase yet, there is no review but an immediate
+  conflict. Later rounds may be empty, for instance when the builder rejects all findings with a justification.
+- **Removed tests:** The code gate lists deleted test files and those that shrank by at least 5 lines net.
+  This is a hint to check, not an error: renamed files and changes to test contents are not detected.
+- **Commit range in the reviewer prompt:** Everything is already committed; the prompt names the range (`abc123..HEAD`)
+  so that a `git diff` without a range does not leave the reviewer empty-handed.
+- **Builder timeout:** If the builder has already changed files, the checks still run – if they are green, it proceeds to the review.
+  Without changes, a timeout remains an agent error (`resume` once it is fixed).
+- **Checks** run with empty stdin – a program that starts a REPL when called without arguments cannot hang.
+- **`.gitignore`:** tikitaka adds missing standard entries in the target project (`.tikitaka/`, `__pycache__/`,
+  `*.pyc`, `.venv/`, `.pytest_cache/`, `node_modules/`, `dist/`, `build/`, `.DS_Store`, `.env`, `.env.*` except
+  `.env.example`), but never overwrites anything.
+- **One run per project:** Runs share the working tree and the commits. A second one is rejected while the first is
+  active, including while it waits at the human gate. Ctrl+C or `stop_run` frees the project again.
+- **Clean start:** A new run does not start if the project has uncommitted changes, because the first commit would
+  pick them up. Exempt are tikitaka's own files and what `init` creates fresh (`openspec/`, `AGENTS.md`).
+  To bypass deliberately: `tikitaka run … --allow-dirty` (not via the coach). `resume` does not check this.
+- **Check timeout:** If a check runs longer than 15 minutes, it is terminated together with its child processes and counts as red.
+- **Output that is not UTF-8** is replaced instead of aborting the run.
 
-### Schreibschutz
+### Write protection
 
-`readonly` setzt nur Harness-Flags, und ein Reviewer mit Shell kommt daran vorbei. Deshalb prüft der Orchestrator
-nach jedem Agentenaufruf (auch nach Absturz, Timeout oder Ctrl+C), was sich wirklich geändert hat. Bei Timeout und
-Abbruch beendet er vorher den Agenten samt Kindprozessen (erst SIGTERM, nach 5 Sekunden SIGKILL):
+`readonly` only sets harness flags, and a reviewer with a shell can get around them. That is why the orchestrator
+checks after every agent invocation (also after a crash, timeout or Ctrl+C) what has actually changed. On timeout and
+abort it first terminates the agent together with its child processes (SIGTERM first, SIGKILL after 5 seconds):
 
-- **Readonly-Agenten:** Geänderte oder neue Dateien, eigene Commits und Branch-Wechsel werden auf den Stand vor dem
-  Aufruf zurückgesetzt. Die Änderungen liegen als `<run>/guard/<schritt>.patch`.
-- **Alle Agenten:** `.tikitaka.yaml` wird wiederhergestellt, die Fassung des Agenten liegt unter
-  `<run>/guard/<schritt>.tikitaka.yaml`. Kein Agent ändert die Regeln, nach denen er geprüft wird.
+- **Read-only agents:** Changed or new files, their own commits and branch switches are reset to the state before the
+  invocation. The changes are kept as `<run>/guard/<step>.patch`.
+- **All agents:** `.tikitaka.yaml` is restored; the agent's version is kept at
+  `<run>/guard/<step>.tikitaka.yaml`. No agent changes the rules by which it is checked.
 
-Der Lauf geht danach weiter, das Review zählt also trotzdem. Jede Verletzung steht im Gate-Dokument, in
-`gate_briefing` und in `compare_runs`. `set_agents` ist abgelehnt, solange ein Agent arbeitet.
+The run then continues, so the review still counts. Every violation appears in the gate document, in
+`gate_briefing` and in `compare_runs`. `set_agents` is rejected while an agent is working.
 
-Grenzen: Gitignorierte Dateien und andere Branches als der aktuelle werden nicht geprüft. Beendet sich ein Agent
-normal, kann ein von ihm im Hintergrund gestarteter Prozess nach der Prüfung weiterlaufen. Testläufe des Reviewers
-dürfen nur ignorierte Dateien erzeugen, sonst gibt es eine Warnung (z.B. `.coverage` in die `.gitignore` aufnehmen).
-Von Hand geänderte Dateien im Projekt werden während eines Reviews mit zurückgesetzt (dann im Patch), ebenso
-`.tikitaka.yaml` während eines beliebigen Agentenlaufs.
+Limits: Git-ignored files and branches other than the current one are not checked. If an agent exits
+normally, a process it started in the background may keep running after the check. The reviewer's test runs
+may only create ignored files, otherwise there is a warning (e.g. add `.coverage` to `.gitignore`).
+Files changed by hand in the project are reset during a review as well (and then preserved in the patch), as is
+`.tikitaka.yaml` during any agent run.
 
-### Human Gate
+### Human gate
 
-Am Gate hält der Orchestrator an, schickt eine macOS-Benachrichtigung und schreibt
-`../calculator/.tikitaka/runs/add-calculator/gate-spec-1.md` mit Zusammenfassung, offenen Findings,
-Annahmen des Builders und Links zu den Spec-Dateien. Oben im Dokument:
+At the gate the orchestrator stops, sends a macOS notification and writes
+`../calculator/.tikitaka/runs/add-calculator/gate-spec-1.md` with a summary, open findings,
+the builder's assumptions and links to the spec files. At the top of the document:
 
 ```yaml
 ---
@@ -214,8 +214,8 @@ decision: pending   # approve | changes | reject
 ---
 ```
 
-Auf `changes` setzen, unter `## Dein Feedback` schreiben, speichern – der Workflow läuft weiter.
-Mit Ctrl+C kannst du das Warten abbrechen und später fortsetzen:
+Set it to `changes`, write your feedback under `## Dein Feedback`, save – and the workflow continues.
+With Ctrl+C you can abort the waiting and resume later:
 
 ```bash
 uv run tikitaka resume ../calculator --change add-calculator
@@ -225,30 +225,30 @@ uv run tikitaka resume ../calculator --change add-calculator
 uv run tikitaka status ../calculator
 ```
 
-## Dateien eines Laufs
+## Files of a run
 
-`<projekt>/.tikitaka/runs/<change>/` (gitignored):
+`<project>/.tikitaka/runs/<change>/` (gitignored):
 
-| Datei | Inhalt |
+| File | Content |
 |---|---|
-| `state.json` | Phase, Zyklus, Ergebnisse, Verlauf |
-| `logs/<schritt>.log` / `.prompt.md` | Ausgabe und Prompt jedes Agentenaufrufs |
-| `<schritt>-review.json` / `-builder.json` | strukturierte Antworten |
-| `<schritt>.full.diff` | Gesamtdiff der Phase; beim ersten Review einer Phase der Diff des Reviewers |
-| `<schritt>.diff` | Ab dem zweiten Review: Diff seit dem letzten Review |
-| `<schritt>-checks-<n>.log` | Ausgabe der Checks je Versuch |
-| `gate-<phase>-<n>.md` | Human-Gate-Dokumente |
-| `mcp/` | Ergebnisse, Kontext und Fragen der Agenten über den MCP-Server |
-| `guard/<schritt>.*` | Zurückgesetzte Änderungen bei Schreibschutz-Verletzungen |
-| `../../lock` (also `.tikitaka/lock`) | Sperre des Projekts mit dem aktiven Lauf |
-| `orchestrator.log` / `orchestrator.pid` | Ausgabe und Prozess-ID von Läufen, die der Coach gestartet hat |
+| `state.json` | Phase, cycle, results, history |
+| `logs/<step>.log` / `.prompt.md` | Output and prompt of each agent invocation |
+| `<step>-review.json` / `-builder.json` | Structured responses |
+| `<step>.full.diff` | Full diff of the phase; on the first review of a phase, the reviewer's diff |
+| `<step>.diff` | From the second review on: diff since the last review |
+| `<step>-checks-<n>.log` | Check output per attempt |
+| `gate-<phase>-<n>.md` | Human gate documents |
+| `mcp/` | Results, context and questions of the agents via the MCP server |
+| `guard/<step>.*` | Changes reset due to write-protection violations |
+| `../../lock` (i.e. `.tikitaka/lock`) | Lock on the project holding the active run |
+| `orchestrator.log` / `orchestrator.pid` | Output and process ID of runs started by the coach |
 
-## Umbenennung
+## Renaming
 
-Das Projekt hieß früher `agent-tandem`. Bestehende Zielprojekte laufen weiter: `.agent-tandem.yaml` wird gelesen, solange es
-keine `.tikitaka.yaml` gibt, und Läufe unter `.agent-tandem/runs/` (und den noch älteren `.agentflow/runs/`) lassen sich
-fortsetzen. Neue Läufe landen in `.tikitaka/`. Der Befehl `agent-tandem` bleibt vorerst als Alias, damit bestehende
-Coach-Einbindungen weiter starten.
+The project used to be called `agent-tandem`. Existing target projects keep working: `.agent-tandem.yaml` is read as long as
+there is no `.tikitaka.yaml`, and runs under `.agent-tandem/runs/` (and the even older `.agentflow/runs/`) can be
+resumed. New runs go to `.tikitaka/`. The `agent-tandem` command remains as an alias for now, so that existing
+coach integrations keep starting.
 
 ## Tests
 
@@ -256,5 +256,5 @@ Coach-Einbindungen weiter starten.
 uv run pytest -q
 ```
 
-Die Tests nutzen einen Fake-Harness ([tests/fake_agent.py](tests/fake_agent.py)) und spielen den kompletten Ablauf
-inkl. Human-Feedback, Check-Fix und Konflikt durch – ohne echte Agenten.
+The tests use a fake harness ([tests/fake_agent.py](tests/fake_agent.py)) and play through the complete flow
+including human feedback, check fixes and conflict – without real agents.
