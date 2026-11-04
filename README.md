@@ -20,6 +20,41 @@ Code builder ⇄ Code reviewer (max. 2 rounds)  ──▶  HUMAN GATE code
 - Every round is a **git commit** in the target project. Human feedback is recorded in the commit message.
 - State lives in `<project>/.tikitaka/runs/<change>/state.json` → `resume` is possible at any time.
 
+## Quickstart
+
+Run everything from the tikitaka directory. The target project (`../tikitaka-smoke` below) is a sibling directory.
+Comments sit on their own lines on purpose: an interactive zsh does not treat a trailing `# …` as a comment
+and would fail with `missing delimiter for 'g' glob qualifier`.
+
+```bash
+# Check harnesses, tools and model IDs (add --probe to send each model a tiny request)
+uv run tikitaka doctor
+
+# Create the target project (git + openspec + .tikitaka.yaml)
+uv run tikitaka init ../tikitaka-smoke
+
+# Start a new run – or continue an existing one for the same change (a new --idea is then ignored)
+uv run tikitaka run ../tikitaka-smoke --change add-hello --idea "minimal hello in python"
+
+# The same with the idea from a file
+uv run tikitaka run ../tikitaka-smoke --change add-hello --idea-file idee.md
+
+# Start despite uncommitted changes in the target project (they get committed)
+uv run tikitaka run ../tikitaka-smoke --change add-hello --idea "…" --allow-dirty
+
+# Continue a run (after Ctrl+C, an agent error or while waiting at a human gate)
+uv run tikitaka resume ../tikitaka-smoke --change add-hello
+
+# Show the runs of a project
+uv run tikitaka status ../tikitaka-smoke
+
+# Coach MCP server (stdio) for Claude Code / OpenCode – see "Coach" below for registering it
+uv run tikitaka coach
+```
+
+At a human gate, open `<project>/.tikitaka/runs/<change>/gate-<phase>-<n>.md`, set `decision:` to `approve`,
+`changes` (feedback under `## Dein Feedback`) or `reject` and save – the run continues.
+
 ## Setup
 
 ```bash
