@@ -25,8 +25,12 @@ Code builder ⇄ Code reviewer (max. 2 rounds)  ──▶  HUMAN GATE code
 ```bash
 uv sync
 npm install -g @fission-ai/openspec   # if not installed yet
-uv run tikitaka doctor               # checks harnesses + tools
+uv run tikitaka doctor               # checks harnesses, tools and whether the configured models exist
+uv run tikitaka doctor --probe       # additionally sends every model one tiny request (finds blocked models, expired logins)
 ```
+
+`run` and `resume` check the model IDs against the harness (`models_cmd`, e.g. `opencode models`) before they
+start and stop with suggestions when one is unknown (`--skip-preflight` to bypass).
 
 Roles and harnesses are configured in [workflow.yaml](workflow.yaml). Switching the combination = changing a single line:
 
@@ -63,8 +67,8 @@ Prompts and harness definitions stay global. `checks.<phase>` replaces the globa
 
 ```yaml
 agents:
-  spec_reviewer: { model: "hagrid-remote-GLM-5.3-Flash-EXL3/GLM-5.3-Flash-EXL3" }
-  code_reviewer: { model: "hagrid-remote-GLM-5.3-Flash-EXL3/GLM-5.3-Flash-EXL3" }
+  spec_reviewer: { model: "hagrid/GLM-5.3-Flash-EXL3" }
+  code_reviewer: { model: "hagrid/GLM-5.3-Flash-EXL3" }
 ```
 
 Besides shell commands (which must exit 0) there are **smoke checks**: a single command that runs for several
@@ -100,8 +104,8 @@ reviewer diff.
 
 Builders and reviewers report their results through the MCP server `tikitaka`
 ([mcp_server.py](src/tikitaka/mcp_server.py)) instead of a JSON block in the text. tikitaka starts
-it for each agent invocation and registers it with the harness (opencode: `OPENCODE_CONFIG_CONTENT`,
-claude: `--mcp-config`). The tool arguments are schema-checked – an invalid `verdict` or a
+it for each agent invocation and registers it with the harness (claude: `--mcp-config`; OpenCode: see below).
+The tool arguments are schema-checked – an invalid `verdict` or a
 wrong `severity` is rejected by the server immediately and the agent corrects itself.
 
 | Tool | Role | Purpose |
@@ -113,8 +117,17 @@ wrong `severity` is rejected by the server immediately and the agent corrects it
 | `ask_human(question)` | both | Question to you – collected and shown in the gate document |
 
 The results are stored in `<run>/mcp/<step>.result.json`, questions in `<run>/mcp/questions.jsonl`.
-If an agent does not call the tool (or the harness has no `mcp_args`/`mcp_env`), the JSON block in the text
+If an agent does not call the tool (or the harness has no MCP settings), the JSON block in the text
 is still used, including a follow-up request. To disable: `mcp: false` in `workflow.yaml`.
+
+**OpenCode (V2):** its background service starts MCP servers once per project and ignores the environment of the
+client (`OPENCODE_CONFIG_CONTENT`), and a private `--standalone` server does not know your Kiro or GitHub Copilot login.
+So the harness definition (`mcp_config_file` / `mcp_config_content`) makes tikitaka write
+`<project>/.opencode/opencode.json` with the server. The file is excluded locally via `.git/info/exclude`, removed
+when the run ends, and a file that does not belong to tikitaka is never overwritten (the run stops with a hint instead).
+Because the server lives longer than one agent call, it reads the current step and role from `<run>/mcp/current.json`
+and rejects the wrong tool for the role. In OpenCode's Code Mode the agent finds the tools via `search` and calls
+`tools.tikitaka.submit_review(...)` inside `execute`; the prompts say so.
 
 ### Coach: steering tikitaka from Claude Code or OpenCode
 
@@ -171,7 +184,7 @@ OpenCode (`~/.config/opencode/opencode.jsonc`):
 - **Builder timeout:** If the builder has already changed files, the checks still run – if they are green, it proceeds to the review.
   Without changes, a timeout remains an agent error (`resume` once it is fixed).
 - **Checks** run with empty stdin – a program that starts a REPL when called without arguments cannot hang.
-- **`.gitignore`:** tikitaka adds missing standard entries in the target project (`.tikitaka/`, `__pycache__/`,
+- **`.gitignore`:** tikitaka adds missing standard entries in the target project (`.tikitaka/`, `.kiro/`, `__pycache__/`,
   `*.pyc`, `.venv/`, `.pytest_cache/`, `node_modules/`, `dist/`, `build/`, `.DS_Store`, `.env`, `.env.*` except
   `.env.example`), but never overwrites anything.
 - **One run per project:** Runs share the working tree and the commits. A second one is rejected while the first is
@@ -181,6 +194,18 @@ OpenCode (`~/.config/opencode/opencode.jsonc`):
   To bypass deliberately: `tikitaka run … --allow-dirty` (not via the coach). `resume` does not check this.
 - **Check timeout:** If a check runs longer than 15 minutes, it is terminated together with its child processes and counts as red.
 - **Output that is not UTF-8** is replaced instead of aborting the run.
+- **Permissions of non-interactive agents:** An agent started by tikitaka cannot answer `ask` prompts of its harness; the
+  request is rejected and the agent then guesses. The OpenCode harness therefore runs with `--auto` (approves everything
+  that is not explicitly `deny`ed in your OpenCode config). `blocked_patterns` recognises such rejections in the output:
+  tikitaka warns, and from 3 rejections in one call it stops the agent as an agent error with a hint. A builder that
+  changed nothing gets that hint in the conflict reason.
+- **Transient provider errors:** Output matching `transient_patterns` (HTTP 401/429/5xx, "Model unavailable", …) is
+  retried once after 5 seconds before the run stops as an agent error.
+- **Text instead of tool calls:** If the output contains tool calls as text (`<invoke name=…>`) that were never executed,
+  tikitaka warns – the model does not cope with the harness (`doctor --probe` detects this as well).
+- **Agent errors do not count as a cycle:** After `resume`, the same cycle continues (`c1`, not `c2`); the error output
+  shows the error lines instead of repeated status lines.
+- **`state.json`** is written atomically, so `status`, the coach and parallel readers never see half a file.
 
 ### Write protection
 

@@ -29,6 +29,44 @@ class AgentResult:
     returncode: int
     output: str
     timed_out: bool = False
+    blocked: int = 0  # Aktionen, die der Harness wegen fehlender Berechtigung abgelehnt hat
+    aborted: bool = False  # tikitaka hat den Agenten wegen zu vieler Ablehnungen beendet
+
+
+# Ab so vielen Berechtigungs-Ablehnungen in einem Aufruf beendet tikitaka den Agenten
+BLOCKED_ABORT_AFTER = 3
+# Ein Agent, der Tool-Aufrufe als Text ausgibt, statt sie auszuführen (und danach Ergebnisse erfindet)
+FAKE_TOOL_CALL = re.compile(r"<invoke name=|<parameter name=|<function_calls>")
+
+
+def blocked_matcher(harness: dict) -> re.Pattern | None:
+    """Muster aus `blocked_patterns` des Harness: Ausgaben, die eine verweigerte Berechtigung melden."""
+    patterns = harness.get("blocked_patterns") or []
+    return re.compile("|".join(f"(?:{p})" for p in patterns)) if patterns else None
+
+
+def has_fake_tool_calls(output: str) -> bool:
+    return bool(FAKE_TOOL_CALL.search(output))
+
+
+def is_transient_failure(harness: dict, res: AgentResult) -> bool:
+    """Scheiterte der Aufruf an einem Fehler, der laut `transient_patterns` oft beim zweiten Versuch verschwindet
+    (Anmelde-Token, Rate-Limit, Anbieter-Fehler)?"""
+    patterns = harness.get("transient_patterns") or []
+    if not patterns or res.returncode == 0 or res.timed_out or res.aborted:
+        return False
+    return bool(re.search("|".join(f"(?:{p})" for p in patterns), res.output))
+
+
+def error_tail(output: str, count: int = 3) -> list[str]:
+    """Die aussagekräftigsten Zeilen einer Agentenausgabe: Fehlerzeilen, sonst das Ende ohne Wiederholungen."""
+    lines: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line and (not lines or lines[-1] != line):
+            lines.append(line)
+    errors = [line for line in lines if re.search(r"\b(error|fehler|exception|failed)\b", line, re.I)]
+    return (errors or lines)[-count:]
 
 
 def render_prompt(template: str, values: dict[str, object]) -> str:
@@ -50,7 +88,7 @@ def can_continue(harness: dict) -> bool:
 
 
 def supports_mcp(harness: dict) -> bool:
-    return bool(harness.get("mcp_args") or harness.get("mcp_env"))
+    return bool(harness.get("mcp_args") or harness.get("mcp_env") or harness.get("mcp_config_file"))
 
 
 def _substitute(value: object, subst: dict[str, str]) -> str:
@@ -159,8 +197,12 @@ def run_agent(
         start_new_session=True,  # eigene Prozessgruppe: Abbruch und Timeout erreichen auch Kindprozesse
     )
     lines: list[str] = []
+    blocked_re = blocked_matcher(harness)
+    blocked = 0
+    aborted = threading.Event()
 
     def pump() -> None:
+        nonlocal blocked
         with log_file.open("w") as log:
             for line in proc.stdout:  # type: ignore[union-attr]
                 clean = strip_ansi(line)  # Log, state.json und JSON-Parsing ohne Farbcodes
@@ -169,6 +211,11 @@ def run_agent(
                 log.flush()
                 sys.stdout.write("    │ " + line)  # Terminal behält die Farben
                 sys.stdout.flush()
+                if blocked_re and blocked_re.search(clean):
+                    blocked += 1
+                    if blocked >= BLOCKED_ABORT_AFTER and not aborted.is_set():
+                        aborted.set()  # der Agent rät sonst ohne Zugriff weiter
+                        _stop_group(proc)
 
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
@@ -182,4 +229,4 @@ def run_agent(
         _stop_group(proc)
         raise
     reader.join(timeout=5)
-    return AgentResult(proc.returncode, "".join(lines), timed_out)
+    return AgentResult(proc.returncode, "".join(lines), timed_out, blocked, aborted.is_set())

@@ -148,6 +148,6 @@ PROJECT_TEMPLATE = """\
 
 # Modelle pro Rolle (nur harness/model; Modell-IDs: `opencode models`)
 # agents:
-#   spec_reviewer: { model: "hagrid-remote-DeepSeek-V4.1-Flash-1017/DeepSeek-V4.1-Flash-1017" }
+#   spec_reviewer: { model: "hagrid/DeepSeek-V4.1-Flash-1017" }
 #   code_builder:  { harness: opencode, model: "lmstudio/qwen3.8-27b-splash" }
 """

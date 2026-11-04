@@ -7,3 +7,4 @@ dist/
 build/
 .tikitaka/
 .DS_Store
+.kiro/

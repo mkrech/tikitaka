@@ -10,6 +10,7 @@ from pathlib import Path
 from .config import PROJECT_CONFIG, PROJECT_TEMPLATE, load_config, project_config_path
 from .harness import harness_available
 from .orchestrator import Orchestrator, list_runs
+from .preflight import model_problems, probe_agents
 
 DEFAULT_CONFIG = os.environ.get("TIKITAKA_CONFIG", "workflow.yaml")
 
@@ -40,6 +41,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     orch = Orchestrator(cfg, args.project, args.change, idea=idea, allow_dirty=args.allow_dirty)
     if idea and orch.state["idea"] != idea:
         print("⚠ Es gibt bereits einen Lauf für diesen Change – die neue Idee wird ignoriert (resume).")
+    if not args.skip_preflight:
+        problems = model_problems(orch.cfg)
+        if problems:
+            raise ValueError("Modell-Konfiguration prüfen (oder --skip-preflight):\n  " + "\n  ".join(problems))
     phase = orch.run()
     return 0 if phase == "done" else 1
 
@@ -66,10 +71,37 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         found = shutil.which(tool) is not None
         print(f"{'✓' if found else '✗'} {tool}")
         ok &= found
+    mcp_ok = _mcp_importable()
+    print(f"{'✓' if mcp_ok else '✗'} MCP-Server (mcp.server.mcpserver){'' if mcp_ok else ' – uv add \"mcp>=2\"'}")
+    ok &= mcp_ok or not cfg.mcp
+
+    problems = model_problems(cfg)
+    flagged = {p.split(":", 1)[0] for p in problems}
+    probes = probe_agents(cfg) if args.probe else {}
     for role, agent in cfg.agents.items():
-        print(f"  {role:<14} → {agent.harness}{' (' + agent.model + ')' if agent.model else ''}"
-              f"{' [readonly]' if agent.readonly else ''}")
+        extra = ""
+        mark = " "
+        if role in flagged:
+            mark, ok = "✗", False
+        elif args.probe:
+            good, detail = probes[(agent.harness, agent.model)]
+            mark, extra = ("✓", "") if good else ("✗", f"  ← {detail}")
+            ok &= good
+        print(f"{mark} {role:<14} → {agent.harness}{' (' + agent.model + ')' if agent.model else ''}"
+              f"{' [readonly]' if agent.readonly else ''}{extra}")
+    for problem in problems:
+        print(f"  ✗ {problem}")
+    if not args.probe:
+        print("  (Mit --probe antwortet jedes Modell einmal auf einen Mini-Aufruf – findet z.B. gesperrte Modelle.)")
     return 0 if ok else 1
+
+
+def _mcp_importable() -> bool:
+    try:
+        import mcp.server.mcpserver  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def cmd_coach(args: argparse.Namespace) -> int:
@@ -97,18 +129,21 @@ def main(argv: list[str] | None = None) -> int:
     idea.add_argument("--idea", help="Beschreibung der Anforderung")
     idea.add_argument("--idea-file", help="Datei mit der Anforderung")
     p.add_argument("--allow-dirty", action="store_true", help="Neuen Lauf trotz offener Änderungen starten (werden mitcommittet)")
+    p.add_argument("--skip-preflight", action="store_true", help="Modell-IDs nicht vor dem Start prüfen")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("resume", help="Lauf fortsetzen (z.B. nach Ctrl+C am Human Gate)")
     p.add_argument("project")
     p.add_argument("--change", required=True)
+    p.add_argument("--skip-preflight", action="store_true", help="Modell-IDs nicht vor dem Start prüfen")
     p.set_defaults(func=cmd_run, idea=None, idea_file=None, allow_dirty=False)
 
     p = sub.add_parser("status", help="Läufe eines Projekts anzeigen")
     p.add_argument("project")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("doctor", help="Prüfen, ob Harnesses und Tools installiert sind")
+    p = sub.add_parser("doctor", help="Prüfen, ob Harnesses, Tools und Modelle in Ordnung sind")
+    p.add_argument("--probe", action="store_true", help="Jedes Modell einmal mit einem Mini-Aufruf testen")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("coach", help="Coach-MCP-Server (stdio) zum Beobachten und Steuern von Läufen")

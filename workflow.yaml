@@ -4,11 +4,11 @@
 #   claude + opencode, opencode + opencode, kiro + opencode ...
 
 agents:
-  # Builder: Qwen lokal (LM Studio) · Reviewer: DeepSeek auf Hagrid -> unterschiedliche Modelle
-  spec_builder:  { harness: opencode, model: "lmstudio/qwen3.8-27b-splash", prompt: prompts/spec-builder.md }
-  spec_reviewer: { harness: opencode, model: "hagrid-remote-DeepSeek-V4.1-Flash-1017/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
-  code_builder:  { harness: opencode, model: "lmstudio/qwen3.8-27b-splash", prompt: prompts/code-builder.md }
-  code_reviewer: { harness: opencode, model: "hagrid-remote-DeepSeek-V4.1-Flash-1017/DeepSeek-V4.1-Flash-1017", prompt: prompts/code-reviewer.md, readonly: true }
+  # Builder (Spec + Code): Claude Haiku 5.5 (GitHub Copilot) · Reviewer: DeepSeek auf Hagrid -> unterschiedliche Modelle
+  spec_builder:  { harness: opencode, model: "github-copilot/claude-haiku-5.5", prompt: prompts/spec-builder.md }
+  spec_reviewer: { harness: opencode, model: "hagrid/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
+  code_builder:  { harness: opencode, model: "github-copilot/claude-haiku-5.5", prompt: prompts/code-builder.md }
+  code_reviewer: { harness: opencode, model: "hagrid/DeepSeek-V4.1-Flash-1017", prompt: prompts/code-reviewer.md, readonly: true }
   # Optional pro Agent: model: "provider/model" (opencode: `opencode models` listet die verfügbaren).
   # Tipp: Builder und Reviewer mit unterschiedlichen Modellen -> unterschiedliche blinde Flecken.
 
@@ -48,7 +48,16 @@ notify: true
 # session_args / resume_args -> Reviewer-Sitzung mit eigener ID starten / fortsetzen (Rückfragen mit vollem Kontext).
 #   Platzhalter: {session_uuid} (UUID), {session_hex} (UUID ohne Bindestriche). Ohne sie: Rückfrage mit dem Ende der Antwort.
 # mcp_args / mcp_env -> tikitaka-MCP-Server anbinden (submit_review/submit_build, ask_human).
-#   Platzhalter: {mcp_claude_config} (Datei im mcpServers-Format), {mcp_opencode_config} (JSON-Inhalt)
+#   Platzhalter: {mcp_claude_config} (Datei im mcpServers-Format), {mcp_opencode_config} (JSON-Inhalt, OpenCode V1: mcp.<name>),
+#   {mcp_opencode_v2_config} (JSON-Inhalt, OpenCode V2: mcp.servers.<name>)
+# mcp_config_file / mcp_config_content -> stattdessen eine Projektdatei mit dem MCP-Server anlegen (für Harnesses,
+#   deren Hintergrunddienst die Umgebung des Clients ignoriert). {mcp_opencode_v2_static_config}: Schritt und Rolle
+#   liest der Server dann bei jedem Aufruf aus mcp/current.json.
+# models_cmd -> listet die Modell-IDs des Harness (eine pro Zeile); `run`/`resume` und `doctor` prüfen damit die Konfiguration.
+# blocked_patterns -> Regexe für Ausgaben, die eine verweigerte Berechtigung melden. Der Lauf warnt; ab 3 Treffern in
+#   einem Aufruf wird der Agent beendet, weil er ohne Zugriff nur rät.
+# transient_patterns -> Regexe für Fehler, die oft beim zweiten Versuch verschwinden (Token, Rate-Limit, Anbieter): ein
+#   automatischer Wiederholungsversuch nach 5s, bevor der Lauf als Agent-Fehler stoppt.
 harnesses:
   claude:
     cmd: [claude, -p, "{prompt}"]
@@ -82,14 +91,26 @@ harnesses:
       - NotebookEdit
     mcp_args: [--mcp-config, "{mcp_claude_config}", --allowedTools, "mcp__tikitaka"]
 
+  # OpenCode V2: Der Hintergrunddienst ignoriert die Umgebung (OPENCODE_CONFIG_CONTENT) des Clients, und
+  # `--standalone` (privater Server) kennt weder die Kiro- noch die GitHub-Copilot-Anmeldung. Deshalb liest OpenCode
+  # den MCP-Server aus einer Projektdatei, die tikitaka anlegt, lokal ignoriert und am Laufende wieder entfernt.
+  # --auto gibt nicht-interaktiv frei, was nicht ausdrücklich per deny gesperrt ist (ask würde abgelehnt).
   opencode:
     cmd: [opencode, run, "{prompt}"]
     session_args: [--session, "ses_{session_hex}"]
     resume_args: [--session, "ses_{session_hex}"]
     model_args: [-m, "{model}"]
-    write_args: [--agent, build]
-    readonly_args: [--agent, plan]
-    mcp_env: { OPENCODE_CONFIG_CONTENT: "{mcp_opencode_config}" }
+    write_args: [--agent, build, --auto]
+    readonly_args: [--agent, plan, --auto]
+    mcp_config_file: .opencode/opencode.json
+    mcp_config_content: "{mcp_opencode_v2_static_config}"
+    models_cmd: [opencode, models]
+    transient_patterns:
+      - "HTTP (401|429|5\\d\\d)"
+      - "Model unavailable"
+      - "Internal error"
+    blocked_patterns:
+      - "permission requested: .*auto-rejecting"
 
   # Kiro CLI – Flags vor Nutzung mit `kiro-cli chat --help` prüfen
   kiro:

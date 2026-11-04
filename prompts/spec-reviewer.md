@@ -70,6 +70,11 @@ Ansonsten: keine Kleinigkeiten zu `major` aufblasen. `verdict` ist `approve`, we
 Rufe am Ende das Tool **`submit_review`** (MCP-Server `tikitaka`) mit `verdict`, `summary` und `findings` auf.
 Kannst du eine Frage nur mit dem Menschen klären, nutze zusätzlich `ask_human`.
 
+Wo du das Tool findest: je nach Harness direkt als `tikitaka_submit_review` oder – in OpenCode mit Code Mode – im
+`execute`-Tool als `await tools.tikitaka.submit_review({ verdict, summary, findings })` (mit `search` nach „tikitaka“
+auffindbar). Arbeite nur im Projektverzeichnis: Lies nichts außerhalb davon und suche nicht im Quellcode von tikitaka
+nach der Abgabe.
+
 Nur falls dir das Tool `submit_review` **nicht** zur Verfügung steht, beende deine Antwort stattdessen mit genau einem JSON-Block:
 
 ```json

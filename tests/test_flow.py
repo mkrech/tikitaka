@@ -105,6 +105,38 @@ def test_agent_failure_stops_without_gate_and_resumes(tmp_path: Path) -> None:
     assert Orchestrator(cfg, tmp_path, "c", gate=gate).run() == "done"
 
 
+def test_agent_failure_does_not_count_as_a_cycle(tmp_path: Path) -> None:
+    cfg = make_config()
+    good = cfg.harnesses["fake"]
+    cfg.harnesses["fake"] = {"cmd": [sys.executable, "-c", "print('Error: Model unavailable: x/y'); exit(1)"]}
+    orch = Orchestrator(cfg, tmp_path, "c", idea="x", gate=ScriptedGate([]))
+    assert orch.run() == "error"
+    assert orch.state["cycle"] == 0
+
+    cfg.harnesses["fake"] = good
+    orch = Orchestrator(cfg, tmp_path, "c", gate=ScriptedGate([GateDecision("approve", ""), GateDecision("approve", "")]))
+    assert orch.run() == "done"
+    # derselbe Zyklus läuft weiter: kein c2 nach dem Fehlversuch
+    assert (tmp_path / ".tikitaka/runs/c/logs/spec-c1-r1-build.log").exists()
+    assert not (tmp_path / ".tikitaka/runs/c/logs/spec-c2-r1-build.log").exists()
+
+
+def test_agent_is_stopped_when_the_harness_keeps_rejecting_permissions(tmp_path: Path) -> None:
+    cfg = make_config()
+    line = "! permission requested: shell (ls); auto-rejecting"
+    cfg.harnesses["fake"] = {
+        "cmd": [sys.executable, "-c", f"import time\nfor _ in range(3): print({line!r}, flush=True)\ntime.sleep(60)"],
+        "blocked_patterns": ["permission requested: .*auto-rejecting"],
+    }
+    started = time.monotonic()
+    orch = Orchestrator(cfg, tmp_path, "c", idea="x", gate=ScriptedGate([]))
+    assert orch.run() == "error"
+    assert time.monotonic() - started < 30  # nicht erst nach dem Timeout
+    error = next(e for e in orch.state["history"] if e["event"] == "agent_error")["error"]
+    assert "Berechtigung" in error and "--auto" in error
+    assert orch.state["cycle"] == 0
+
+
 def test_missing_review_json_is_requested_without_full_retry(tmp_path: Path) -> None:
     cfg = make_config()
     cfg.harnesses["nojson"] = {**cfg.harnesses["fake"], "cmd": [*cfg.harnesses["fake"]["cmd"], "nojson"]}
@@ -133,6 +165,46 @@ def test_missing_review_json_continues_session_when_harness_supports_it(tmp_path
     calls = (tmp_path / ".tikitaka/runs/c/fake-argv.log").read_text().splitlines()
     sid = next(line for line in calls if line.startswith("spec_reviewer --sid=")).split()[1]
     assert f"spec_reviewer --resume {sid}" in calls
+
+
+def test_transient_provider_error_is_retried_once(tmp_path: Path, monkeypatch) -> None:
+    cfg = make_config()
+    cfg.harnesses["fake"]["transient_patterns"] = ["HTTP (401|429)"]
+    monkeypatch.setattr(orchestrator, "TRANSIENT_DELAY_SECONDS", 0)
+    real, calls = orchestrator.run_agent, []
+
+    def flaky(*args, **kwargs):
+        calls.append(kwargs["log_file"].name)
+        if len(calls) == 1:
+            return orchestrator.AgentResult(1, "Error: Provider request failed with HTTP 401: unauthorized\n")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "run_agent", flaky)
+    gate = ScriptedGate([GateDecision("approve", ""), GateDecision("approve", "")])
+    orch = Orchestrator(cfg, tmp_path, "c", idea="x", gate=gate)
+    assert orch.run() == "done"
+    assert calls[:2] == ["spec-c1-r1-build.log"] * 2  # derselbe Schritt, zweiter Versuch
+    assert any(e["event"] == "agent_retry" for e in orch.state["history"])
+
+
+def test_non_transient_error_is_not_retried(tmp_path: Path, monkeypatch) -> None:
+    cfg = make_config()
+    cfg.harnesses["fake"] = {
+        "cmd": [sys.executable, "-c", "print('Error: kaputt'); exit(1)"], "transient_patterns": ["HTTP 401"],
+    }
+    monkeypatch.setattr(orchestrator, "TRANSIENT_DELAY_SECONDS", 0)
+    orch = Orchestrator(cfg, tmp_path, "c", idea="x", gate=ScriptedGate([]))
+    assert orch.run() == "error"
+    assert not any(e["event"] == "agent_retry" for e in orch.state["history"])
+
+
+def test_mcp_config_for_opencode_v1_and_v2_placeholders(tmp_path: Path) -> None:
+    orch = Orchestrator(make_config(), tmp_path, "c", idea="x", gate=ScriptedGate([]))
+    launch = orch._mcp_launch("spec_builder", "spec-c1-r1-build", None)
+    v1 = json.loads(launch["{mcp_opencode_config}"])["mcp"]["tikitaka"]
+    v2 = json.loads(launch["{mcp_opencode_v2_config}"])["mcp"]["servers"]["tikitaka"]
+    assert v1["command"] == v2["command"] and v2["type"] == "local"
+    assert "enabled" not in v2  # in V2 heißt es `disabled`
 
 
 def test_results_and_questions_via_mcp_server(tmp_path: Path) -> None:
@@ -423,6 +495,8 @@ def test_new_run_ignores_files_from_tikitaka_and_init(tmp_path: Path) -> None:
     (tmp_path / "openspec").mkdir()
     (tmp_path / "openspec/project.md").write_text("x\n")
     (tmp_path / ".tikitaka/runs/c").mkdir(parents=True)
+    (tmp_path / ".kiro/agents").mkdir(parents=True)  # legt der Kiro-Provider von OpenCode selbst an
+    (tmp_path / ".kiro/agents/default.json").write_text("{}\n")
     assert dirty_files(tmp_path) == []
     # Eigene Änderungen in openspec/ zählen, sobald es bereits versioniert ist
     _git_out(tmp_path, "add", "openspec")

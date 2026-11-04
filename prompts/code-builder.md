@@ -30,6 +30,11 @@ Rufe am Ende das Tool **`submit_build`** (MCP-Server `tikitaka`) mit `summary`, 
 Fragen, die nur der Mensch entscheiden kann, stellst du während der Arbeit mit `ask_human` – triff bis dahin eine
 vernünftige Annahme und arbeite weiter.
 
+Wo du das Tool findest: je nach Harness direkt als `tikitaka_submit_build` oder – in OpenCode mit Code Mode – im
+`execute`-Tool als `await tools.tikitaka.submit_build({ summary, addressed, wont_fix, questions })` (mit `search` nach
+„tikitaka“ auffindbar). Arbeite nur im Projektverzeichnis: Lies nichts außerhalb davon und suche nicht im Quellcode von
+tikitaka nach der Abgabe.
+
 Nur falls dir das Tool `submit_build` **nicht** zur Verfügung steht, beende deine Antwort stattdessen mit genau einem JSON-Block:
 
 ```json

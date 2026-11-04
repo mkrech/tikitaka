@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
@@ -20,8 +21,11 @@ from uuid import uuid4
 
 from .config import RUN_DIRS, AgentConfig, Check, Config, apply_project_config, project_config_path
 from .gates import FEEDBACK_HEADING, FileGate, Gate
-from .harness import AgentResult, can_continue, render_prompt, run_agent, run_shell, strip_ansi, supports_mcp
-from .mcp_server import SERVER_NAME, context_path, mcp_dir, read_questions, read_result, result_path
+from .harness import (
+    AgentResult, _substitute, can_continue, error_tail, has_fake_tool_calls, is_transient_failure, render_prompt,
+    run_agent, run_shell, strip_ansi, supports_mcp,
+)
+from .mcp_server import SERVER_NAME, context_path, current_path, mcp_dir, read_questions, read_result, result_path
 from .review import (
     Review, dropped_findings, extract_json, format_builder_response, format_findings, parse_review,
     review_from_data,
@@ -31,6 +35,22 @@ TERMINAL = ("done", "aborted")
 LABEL = {"spec": "Spec", "code": "Code"}
 MAX_CHECK_OUTPUT = 8000
 CHECK_TIMEOUT = 900
+# So lange wartet tikitaka nach dem Schreiben der MCP-Projektkonfiguration, bis der Harness-Dienst sie geladen hat
+MCP_CONFIG_SETTLE_SECONDS = 3
+# Anmelde-Token, Rate-Limit und Anbieterfehler verschwinden oft beim zweiten Versuch (Muster: transient_patterns)
+TRANSIENT_RETRIES = 1
+TRANSIENT_DELAY_SECONDS = 5
+
+
+def _is_tikitaka_mcp_config(path: Path) -> bool:
+    """Besteht die Datei nur aus dem tikitaka-MCP-Server (V2-Format)? Dann gehört sie uns."""
+    try:
+        data = json.loads(path.read_text())
+        return (
+            set(data) == {"mcp"} and set(data["mcp"]) == {"servers"} and set(data["mcp"]["servers"]) == {SERVER_NAME}
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 REPAIR_TAIL = 12000
 REPAIR_PROMPT = """\
@@ -90,11 +110,11 @@ besser als kein Urteil.
 
 # Zielprojekt-.gitignore: wird ergänzt, nie überschrieben
 DEFAULT_IGNORES = (
-    ".tikitaka/", "__pycache__/", "*.pyc", ".venv/", ".pytest_cache/",
+    ".tikitaka/", ".kiro/", "__pycache__/", "*.pyc", ".venv/", ".pytest_cache/",
     "node_modules/", "dist/", "build/", ".DS_Store", ".env", ".env.*", "!.env.example",
 )
-# Zählen beim Start nicht als offene Änderungen: gehören tikitaka ...
-OWN_PATHS = (".tikitaka/", ".tikitaka.yaml", ".agent-tandem/", ".agent-tandem.yaml", ".agentflow/")
+# Zählen beim Start nicht als offene Änderungen: gehören tikitaka (oder legt der Kiro-Provider selbst an) ...
+OWN_PATHS = (".tikitaka/", ".tikitaka.yaml", ".agent-tandem/", ".agent-tandem.yaml", ".agentflow/", ".kiro/")
 # ... oder hat `tikitaka init` frisch angelegt
 INIT_PATHS = ("openspec/", "AGENTS.md")
 # Für den Hinweis am Gate, wenn der Builder Tests entfernt
@@ -180,7 +200,8 @@ class Orchestrator:
         self.gate = gate or FileGate(notify_user=cfg.notify)
         self.allow_dirty = allow_dirty
         self.is_new = not self.state_file.exists()
-
+        self._blocked_steps: list[str] = []
+        self._mcp_config_installed: Path | None = None
         if self.state_file.exists():
             self.state = json.loads(self.state_file.read_text())
         else:
@@ -208,6 +229,7 @@ class Orchestrator:
             lock.flush()
             return self._run_locked()
         finally:
+            self._remove_mcp_config()
             lock.close()
 
     def _run_locked(self) -> str:
@@ -247,7 +269,14 @@ class Orchestrator:
         self._save()
 
         print(f"\n═══ Phase {LABEL[kind]} · Zyklus {cycle} · max. {max_rounds} Runde(n) ═══")
-        result = self._loop(kind, cycle, feedback, max_rounds)
+        self._blocked_steps = []
+        try:
+            result = self._loop(kind, cycle, feedback, max_rounds)
+        except AgentError:
+            # Ein technischer Fehler ist kein Zyklus: Nach `resume` läuft derselbe Zyklus weiter statt c+1
+            self.state["cycle"] = cycle - 1
+            self._save()
+            raise
         if kind == "code":
             result["test_changes"] = self._test_changes(self.state["bases"][kind])
         self.state["results"][kind] = result
@@ -302,9 +331,15 @@ class Orchestrator:
             resp = self._builder(kind, tag, rnd, max_rounds, feedback)
             if self._nothing_built(kind):
                 print("  ✗ Der Builder hat nichts geändert – kein Review")
+                reason = "Der Builder hat in dieser Phase noch nichts geändert."
+                if self._blocked_steps:
+                    reason += (
+                        f" Der Harness hat Aktionen wegen fehlender Berechtigung abgelehnt ({', '.join(self._blocked_steps)})"
+                        " – der Agent braucht eine nicht-interaktive Freigabe (z.B. --auto in write_args)."
+                    )
                 return {
                     "status": "conflict",
-                    "reason": "Der Builder hat in dieser Phase noch nichts geändert.",
+                    "reason": reason,
                     "builder": resp,
                 }
             ok, check_output = self._checks(kind, tag, rnd, max_rounds)
@@ -462,6 +497,8 @@ class Orchestrator:
         if prompt is None:
             prompt = render_prompt(agent.prompt.read_text(), values)
         mcp = self._mcp_launch(role, name, mcp_context) if self.cfg.mcp and supports_mcp(harness) else None
+        if mcp is not None:
+            self._install_mcp_config(harness, mcp)
         print(f"  ▶ {role} [{agent.harness}{' · ' + agent.model if agent.model else ''}] {name}")
         self._log("agent_start", role=role, step=name)
         env = {
@@ -473,22 +510,46 @@ class Orchestrator:
         }
         snapshot = self._guard_snapshot()
         try:
-            res = run_agent(
-                harness, agent, prompt,
-                cwd=self.project,
-                log_file=self.run_dir / "logs" / f"{name}.log",
-                env=env,
-                timeout=self.cfg.timeout_seconds,
-                session_id=session_id,
-                resume=resume,
-                mcp=mcp,
-            )
+            for attempt in range(1, TRANSIENT_RETRIES + 2):
+                res = run_agent(
+                    harness, agent, prompt,
+                    cwd=self.project,
+                    log_file=self.run_dir / "logs" / f"{name}.log",
+                    env=env,
+                    timeout=self.cfg.timeout_seconds,
+                    session_id=session_id,
+                    resume=resume,
+                    mcp=mcp,
+                )
+                if attempt > TRANSIENT_RETRIES or not is_transient_failure(harness, res):
+                    break
+                reason = (error_tail(res.output) or [f"Exit-Code {res.returncode}"])[-1]
+                print(f"  ↻ Vorübergehender Fehler ({reason}) – neuer Versuch in {TRANSIENT_DELAY_SECONDS}s")
+                self._log("agent_retry", role=role, step=name, reason=reason)
+                time.sleep(TRANSIENT_DELAY_SECONDS)
         except FileNotFoundError as exc:
             raise SystemExit(f"Harness '{agent.harness}' nicht gefunden: {exc}") from exc
         finally:
             # Auch bei Absturz oder Ctrl+C: sonst fegt der nächste `git add -A` die Änderungen mit in den Commit
             self._guard_check(role, name, agent, snapshot)
         self._log("agent", role=role, step=name, exit=res.returncode, timed_out=res.timed_out)
+        if res.blocked:
+            self._blocked_steps.append(name)
+            self._log("permission_blocked", role=role, step=name, count=res.blocked)
+        if res.aborted:
+            raise AgentError(
+                f"{role} [{agent.harness}] abgebrochen: {res.blocked} Aktionen wegen fehlender Berechtigung abgelehnt.\n"
+                "  Der Harness läuft nicht-interaktiv und kann nicht nachfragen. Erlaube die Aktionen "
+                "(z.B. --auto in write_args/readonly_args von workflow.yaml)\n"
+                "  oder prüfe die Berechtigungen des Harness."
+                f"\n  Log: {self.run_dir / 'logs' / f'{name}.log'}"
+            )
+        if res.blocked:
+            print(f"  ⚠ {role}: {res.blocked} Aktion(en) wegen fehlender Berechtigung abgelehnt – siehe Log")
+        if has_fake_tool_calls(res.output):
+            self._log("fake_tool_calls", role=role, step=name)
+            print(f"  ⚠ {role}: Tool-Aufrufe stehen nur als Text in der Ausgabe und wurden nicht ausgeführt – "
+                  "das Modell kommt mit dem Harness vermutlich nicht zurecht")
         if res.timed_out and soft_timeout and self._has_changes():
             # Builder hat gearbeitet, aber nicht rechtzeitig abgeschlossen – die Checks entscheiden
             print(f"  ⚠ Timeout nach {self.cfg.timeout_seconds}s, aber es gibt Änderungen – weiter mit den Checks")
@@ -496,7 +557,7 @@ class Orchestrator:
             return res
         if res.returncode != 0 or res.timed_out:
             reason = f"Timeout nach {self.cfg.timeout_seconds}s" if res.timed_out else f"Exit-Code {res.returncode}"
-            tail = res.output.strip().splitlines()[-3:]
+            tail = error_tail(res.output)
             raise AgentError(
                 f"{role} [{agent.harness}] {reason}\n  " + "\n  ".join(tail)
                 + f"\n  Log: {self.run_dir / 'logs' / f'{name}.log'}"
@@ -801,21 +862,73 @@ class Orchestrator:
 
     def _mcp_launch(self, role: str, step: str, context: dict | None) -> dict[str, str]:
         """Bereitet den tikitaka-MCP-Server für einen Agentenaufruf vor und liefert die Platzhalter
-        für mcp_args/mcp_env: {mcp_claude_config} (Datei) und {mcp_opencode_config} (JSON-Inhalt)."""
+        für mcp_args/mcp_env/mcp_config_content: {mcp_claude_config} (Datei), {mcp_opencode_config} und
+        {mcp_opencode_v2_config} (JSON-Inhalt je OpenCode-Version) sowie {mcp_opencode_v2_static_config}
+        (ohne Schritt: der Server liest ihn aus mcp/current.json)."""
         directory = mcp_dir(self.run_dir)
         directory.mkdir(parents=True, exist_ok=True)
         result_path(self.run_dir, step).unlink(missing_ok=True)  # nie ein altes Ergebnis übernehmen
         context_path(self.run_dir, step).write_text(json.dumps(context or {}, indent=2, ensure_ascii=False))
-        command = [
-            sys.executable, "-m", "tikitaka.mcp_server",
-            "--run-dir", str(self.run_dir), "--step", step, "--role", role,
-        ]
+        current = current_path(self.run_dir)
+        current.with_suffix(".tmp").write_text(json.dumps({"step": step, "role": role}))
+        current.with_suffix(".tmp").replace(current)
+        base = [sys.executable, "-m", "tikitaka.mcp_server", "--run-dir", str(self.run_dir)]
+        command = [*base, "--step", step, "--role", role]
         claude_config = directory / f"{step}.claude.json"
         claude_config.write_text(json.dumps(
             {"mcpServers": {SERVER_NAME: {"command": command[0], "args": command[1:]}}}, indent=2,
         ))
         opencode_config = {"mcp": {SERVER_NAME: {"type": "local", "command": command, "enabled": True}}}
-        return {"{mcp_claude_config}": str(claude_config), "{mcp_opencode_config}": json.dumps(opencode_config)}
+        # OpenCode V2: Server stehen unter mcp.servers, `enabled` heißt dort `disabled`
+        opencode_v2_config = {"mcp": {"servers": {SERVER_NAME: {"type": "local", "command": command}}}}
+        opencode_v2_static = {"mcp": {"servers": {SERVER_NAME: {"type": "local", "command": base}}}}
+        return {
+            "{mcp_claude_config}": str(claude_config),
+            "{mcp_opencode_config}": json.dumps(opencode_config),
+            "{mcp_opencode_v2_config}": json.dumps(opencode_v2_config),
+            "{mcp_opencode_v2_static_config}": json.dumps(opencode_v2_static, indent=2) + "\n",
+        }
+
+    def _install_mcp_config(self, harness: dict, mcp: dict[str, str]) -> None:
+        """Harnesses, deren Hintergrunddienst die Umgebung des Clients ignoriert (OpenCode V2), lesen die
+        MCP-Konfiguration aus einer Projektdatei. Sie gehört tikitaka, bleibt lokal ignoriert und wird am
+        Laufende wieder entfernt; eine fremde Datei wird nie überschrieben."""
+        relative = harness.get("mcp_config_file")
+        if not relative:
+            return
+        path = self.project / relative
+        content = _substitute(harness.get("mcp_config_content", ""), mcp)
+        if path.exists():
+            if path.read_text() == content:
+                self._mcp_config_installed = path
+                return
+            if not _is_tikitaka_mcp_config(path):
+                raise AgentError(
+                    f"{relative} existiert bereits und gehört nicht zu tikitaka. Trage den MCP-Server dort selbst ein "
+                    f"oder setze 'mcp: false' in workflow.yaml:\n{content}"
+                )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        self._git_exclude(relative)
+        self._mcp_config_installed = path
+        time.sleep(MCP_CONFIG_SETTLE_SECONDS)  # der Dienst lädt geänderte Konfiguration asynchron nach
+
+    def _git_exclude(self, entry: str) -> None:
+        """Lokal ignorieren (.git/info/exclude): nichts landet in einem Commit, die .gitignore bleibt unberührt."""
+        exclude = self.project / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        lines = exclude.read_text().splitlines() if exclude.exists() else []
+        if entry not in lines:
+            exclude.write_text("\n".join([*lines, entry]) + "\n")
+
+    def _remove_mcp_config(self) -> None:
+        path = getattr(self, "_mcp_config_installed", None)
+        if path and path.exists() and _is_tikitaka_mcp_config(path):
+            path.unlink()
+            try:
+                path.parent.rmdir()  # nur, wenn tikitaka das Verzeichnis angelegt hat und es leer ist
+            except OSError:
+                pass
 
     # ----------------------------------------------------------------- Helfer
 
@@ -828,7 +941,10 @@ class Orchestrator:
 
     def _save(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.state_file.write_text(json.dumps(self.state, indent=2, ensure_ascii=False))
+        # Atomar: Coach und `status` lesen state.json, während der Lauf schreibt
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.state, indent=2, ensure_ascii=False))
+        tmp.replace(self.state_file)
 
 
 def list_runs(project: str | Path) -> list[dict]:
