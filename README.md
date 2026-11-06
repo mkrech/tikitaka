@@ -59,12 +59,13 @@ At a human gate, open `<project>/.tikitaka/runs/<change>/gate-<phase>-<n>.md`, s
 
 ```bash
 uv sync
-npm install -g @fission-ai/openspec   # if not installed yet
+npm install -g @fission-ai/openspec                # if not installed yet
+npm install -g @anthropic-ai/sandbox-runtime      # `srt`, only needed for the pi-srt harness
 uv run tikitaka doctor               # checks harnesses, tools and whether the configured models exist
 uv run tikitaka doctor --probe       # additionally sends every model one tiny request (finds blocked models, expired logins)
 ```
 
-`run` and `resume` check the model IDs against the harness (`models_cmd`, e.g. `opencode models`) before they
+`run` and `resume` check the model IDs against the harness (`models_cmd`, e.g. `opencode models` or `pi --list-models`) before they
 start and stop with suggestions when one is unknown (`--skip-preflight` to bypass).
 
 Roles and harnesses are configured in [workflow.yaml](workflow.yaml). Switching the combination = changing a single line:
@@ -76,6 +77,64 @@ agents:
 ```
 
 The prompts for the four roles live in [prompts/](prompts/).
+
+### Harnesses
+
+| Harness | Command | Notes |
+|---|---|---|
+| `claude` | `claude -p` | MCP via `--mcp-config`, sessions via `--session-id`/`--resume` |
+| `opencode` | `opencode run` | background service, so MCP comes from a project file (see below) |
+| `pi` | `pi -p` | no background service, whole agent in the subprocess |
+| `pi-srt` | `srt --settings … pi -p` | same as `pi`, plus sandbox (see below) |
+| `kiro` | `kiro-cli chat --no-interactive` | flags may differ between Kiro versions |
+
+**Pi specifics** (`pi`, `pi-srt`):
+
+- `models_cmd` is `pi --list-models`, so a model must be written as `provider/model` (e.g. `custom-openai/DeepSeek-V4.1-Flash-1017`).
+  Models come from `~/.pi/agent/models.json`; `pi --list-models` prints the available ones.
+- The harness passes `--approve` because Pi only loads the project's `.pi/mcp.json` after project trust; print mode cannot answer the trust prompt.
+- `--tools` is an **allowlist**, not a denylist: an MCP tool that no entry names is never declared to the model, even with
+  `exposure: "direct"`. The read-only harness therefore lists `mcp__tikitaka__*` explicitly next to `read,grep,find,ls`.
+- The reviewer gets no `bash`, so it cannot write anything; the diff is handed to it as a file.
+- Sessions run with `--session-id <uuid>` so a follow-up question can resume the same conversation.
+
+### Sandboxing the agents (`pi-srt`)
+
+The harness `pi-srt` runs Pi inside Anthropic's [Sandbox Runtime](https://github.com/anthropics/sandbox-runtime)
+(`srt`): every agent call is a single sandboxed process tree with filesystem and network isolation, no container needed.
+
+```bash
+npm install -g @anthropic-ai/sandbox-runtime   # provides `srt`
+uv run tikitaka doctor                        # also checks `srt` and the settings file
+```
+
+The rules live in the repo: [sandbox/srt-settings.json](sandbox/srt-settings.json). The harness references them via
+`sandbox_settings`, which is resolved relative to `workflow.yaml` and passed as `{srt_settings}`:
+
+```yaml
+harnesses:
+  pi-srt:
+    cmd: [srt, --settings, "{srt_settings}", pi, -p, "{prompt}"]
+    sandbox_settings: sandbox/srt-settings.json
+```
+
+What the shipped settings do:
+
+| Rule | Effect |
+|---|---|
+| `filesystem.allowWrite: ["."]` | agents write only inside the target project (the run's cwd) – the MCP server's `mcp/` files are in there too |
+| `filesystem.allowWrite: ["~/.pi"]` | Pi keeps its sessions and settings; `~/.pi/agent/auth.json` is `denyWrite` |
+| `filesystem.denyRead` | `~/.ssh`, `~/.aws`, `~/.config/gh` are unreadable |
+| `network.allowedDomains` | only the model provider is reachable – everything else gets `403 host is not on the allow list` |
+
+The deterministic checks (`openspec validate`, `pytest`) still run outside the sandbox: they are shell commands from
+your `workflow.yaml`, not model output. If you want them isolated too, wrap them in `srt` as well.
+
+**`NO_PROXY` caveat:** `srt` always sets `NO_PROXY` to include the private ranges (`10/8`, `172.16/12`, `192.168/16`).
+A client that interprets these CIDR entries (curl does) then dials a LAN model server directly, which the sandbox forbids.
+Pi's undici proxy agent matches `NO_PROXY` entries as host names only, so it goes through srt's filtering proxy and works.
+If a model server stops answering after an undici update, override `NO_PROXY`/`no_proxy` to `localhost,127.0.0.1,::1`
+for the harness command.
 
 ## Example: calculator
 
@@ -164,6 +223,14 @@ Because the server lives longer than one agent call, it reads the current step a
 and rejects the wrong tool for the role. In OpenCode's Code Mode the agent finds the tools via `search` and calls
 `tools.tikitaka.submit_review(...)` inside `execute`; the prompts say so.
 
+**Pi:** Pi has no background service – the agent runs entirely in the subprocess tikitaka starts. Its MCP servers come from
+`<project>/.pi/mcp.json`, using the same `mcpServers` format as Claude. Pi only loads that file once the project is trusted,
+so the harness runs with `--approve`; `exposure: "direct"` puts the tools straight into the model's tool list instead of
+behind a codemode script. The file is excluded locally via `.git/info/exclude`, removed when the run ends, and a foreign
+file is never overwritten. The server reads step and role from `<run>/mcp/current.json`, exactly like OpenCode's.
+Note that `--tools` is an allowlist: an MCP tool that no entry names is not declared, so the read-only harness lists
+`mcp__tikitaka__*` explicitly.
+
 ### Coach: steering tikitaka from Claude Code or OpenCode
 
 `tikitaka coach` is a second MCP server – for **you** instead of for the agents. In a
@@ -204,7 +271,7 @@ OpenCode (`~/.config/opencode/opencode.jsonc`):
 ### Robustness
 
 - **Missing review JSON:** First only the result is requested again (a matter of seconds), only then is the review repeated.
-  If the harness has `resume_args` (opencode, claude), the reviewer's session is resumed through its own ID
+  If the harness has `resume_args` (opencode, claude, pi), the reviewer's session is resumed through its own ID
   for this – it still has its entire review in context, and a parallel session in the same directory stays
   untouched. Otherwise it receives the end of its answer.
 - **Contradictory review:** `approve` with blocking findings, or `changes_requested` without any, leads to a
@@ -261,6 +328,10 @@ normally, a process it started in the background may keep running after the chec
 may only create ignored files, otherwise there is a warning (e.g. add `.coverage` to `.gitignore`).
 Files changed by hand in the project are reset during a review as well (and then preserved in the patch), as is
 `.tikitaka.yaml` during any agent run.
+
+With the `pi-srt` harness the sandbox backs this up at OS level: a read-only agent has no `bash`, `edit` or `write`
+tool, and even if a tool tried to write outside the project, Seatbelt refuses it (`Operation not permitted`).
+The git-based guard still runs – it is the second line of defence and also covers harnesses without a sandbox.
 
 ### Human gate
 

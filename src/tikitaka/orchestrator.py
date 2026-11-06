@@ -43,12 +43,15 @@ TRANSIENT_DELAY_SECONDS = 5
 
 
 def _is_tikitaka_mcp_config(path: Path) -> bool:
-    """Besteht die Datei nur aus dem tikitaka-MCP-Server (V2-Format)? Dann gehört sie uns."""
+    """Besteht die Datei nur aus dem tikitaka-MCP-Server? Dann gehört sie uns.
+    Erkannt werden das OpenCode-V2-Format (mcp.servers) und das mcpServers-Format (Claude, Pi)."""
     try:
         data = json.loads(path.read_text())
-        return (
-            set(data) == {"mcp"} and set(data["mcp"]) == {"servers"} and set(data["mcp"]["servers"]) == {SERVER_NAME}
-        )
+        if set(data) == {"mcp"} and set(data["mcp"]) == {"servers"}:
+            return set(data["mcp"]["servers"]) == {SERVER_NAME}
+        if set(data) == {"mcpServers"}:
+            return set(data["mcpServers"]) == {SERVER_NAME}
+        return False
     except (OSError, ValueError, KeyError, TypeError):
         return False
 
@@ -863,8 +866,8 @@ class Orchestrator:
     def _mcp_launch(self, role: str, step: str, context: dict | None) -> dict[str, str]:
         """Bereitet den tikitaka-MCP-Server für einen Agentenaufruf vor und liefert die Platzhalter
         für mcp_args/mcp_env/mcp_config_content: {mcp_claude_config} (Datei), {mcp_opencode_config} und
-        {mcp_opencode_v2_config} (JSON-Inhalt je OpenCode-Version) sowie {mcp_opencode_v2_static_config}
-        (ohne Schritt: der Server liest ihn aus mcp/current.json)."""
+        {mcp_opencode_v2_config} (JSON-Inhalt je OpenCode-Version), {mcp_opencode_v2_static_config}
+        und {mcp_pi_config} (beide ohne Schritt: der Server liest ihn aus mcp/current.json)."""
         directory = mcp_dir(self.run_dir)
         directory.mkdir(parents=True, exist_ok=True)
         result_path(self.run_dir, step).unlink(missing_ok=True)  # nie ein altes Ergebnis übernehmen
@@ -882,11 +885,15 @@ class Orchestrator:
         # OpenCode V2: Server stehen unter mcp.servers, `enabled` heißt dort `disabled`
         opencode_v2_config = {"mcp": {"servers": {SERVER_NAME: {"type": "local", "command": command}}}}
         opencode_v2_static = {"mcp": {"servers": {SERVER_NAME: {"type": "local", "command": base}}}}
+        # Pi liest .pi/mcp.json (mcpServers-Format wie Claude). `direct`: die Tools sollen dem Modell
+        # direkt zur Verfügung stehen, nicht erst über ein codemode-Script erreichbar sein.
+        pi_config = {"mcpServers": {SERVER_NAME: {"command": base[0], "args": base[1:], "exposure": "direct"}}}
         return {
             "{mcp_claude_config}": str(claude_config),
             "{mcp_opencode_config}": json.dumps(opencode_config),
             "{mcp_opencode_v2_config}": json.dumps(opencode_v2_config),
             "{mcp_opencode_v2_static_config}": json.dumps(opencode_v2_static, indent=2) + "\n",
+            "{mcp_pi_config}": json.dumps(pi_config, indent=2) + "\n",
         }
 
     def _install_mcp_config(self, harness: dict, mcp: dict[str, str]) -> None:

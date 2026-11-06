@@ -120,3 +120,29 @@ def test_foreign_project_mcp_config_is_never_overwritten(tmp_path: Path) -> None
     assert "mein-server" in config_file.read_text()  # unverändert, auch nach dem Lauf
     error = next(e for e in orch.state["history"] if e["event"] == "agent_error")["error"]
     assert "gehört nicht zu tikitaka" in error
+
+
+def _config_with_pi_mcp_file() -> Config:
+    cfg = _config_with_mcp_file(".pi/mcp.json")
+    cfg.harnesses["fake"] = {**cfg.harnesses["fake"], "mcp_config_content": "{mcp_pi_config}"}
+    return cfg
+
+
+def test_pi_project_mcp_config_is_installed_and_removed(tmp_path: Path) -> None:
+    seen: list[dict] = []
+    config_file = tmp_path / ".pi/mcp.json"
+
+    class Spy(ScriptedGate):
+        def wait(self, *args, **kwargs):
+            seen.append(json.loads(config_file.read_text()))
+            return super().wait(*args, **kwargs)
+
+    gate = Spy([GateDecision("approve", ""), GateDecision("approve", "")])
+    orch = Orchestrator(_config_with_pi_mcp_file(), tmp_path, "c", idea="x", gate=gate)
+    assert orch.run() == "done"
+
+    # Pi erwartet mcpServers (wie Claude), aber als JSON-Inhalt; Tools direkt für das Modell
+    server = seen[0]["mcpServers"]["tikitaka"]
+    assert server["exposure"] == "direct" and "--run-dir" in server["args"] and "--step" not in server["args"]
+    assert not config_file.exists() and not config_file.parent.exists()
+    assert ".pi/mcp.json" in (tmp_path / ".git/info/exclude").read_text()

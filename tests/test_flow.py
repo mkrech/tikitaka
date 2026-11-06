@@ -8,7 +8,7 @@ import pytest
 
 from tikitaka.config import AgentConfig, Config, load_config
 from tikitaka.gates import GateDecision, ScriptedGate, parse_gate_file
-from tikitaka.harness import build_command, strip_ansi
+from tikitaka.harness import build_command, sandbox_settings_path, strip_ansi
 from tikitaka import orchestrator
 from tikitaka.orchestrator import DirtyProject, Orchestrator, ProjectBusy, acquire_project_lock, dirty_files
 from tikitaka.review import Review, dropped_findings, extract_json, parse_review
@@ -666,3 +666,34 @@ def test_workflow_gives_each_harness_a_session_of_its_own() -> None:
         second = build_command(harness, agent, "p", Path("f"), session_id=sid, resume=True)
         assert " ".join(start) in " ".join(first) and " ".join(again) in " ".join(second)
         assert "--continue" not in second
+
+
+def test_sandboxed_harness_gets_the_settings_path_from_the_config_dir(tmp_path: Path) -> None:
+    """`sandbox_settings` wird relativ zur workflow.yaml aufgelöst und landet als {srt_settings} im Kommando."""
+    prompts = ROOT / "prompts"
+    roles = "".join(
+        f"  {role}: {{ harness: pi-srt, prompt: {prompts / (role.replace('_', '-') + '.md')} }}\n"
+        for role in ("spec_builder", "spec_reviewer", "code_builder", "code_reviewer")
+    )
+    config = tmp_path / "workflow.yaml"
+    config.write_text(
+        "agents:\n" + roles
+        + "harnesses:\n  pi-srt:\n    cmd: [srt, --settings, \"{srt_settings}\", pi, -p, \"{prompt}\"]\n"
+        + "    sandbox_settings: sandbox/srt-settings.json\n"
+    )
+    cfg = load_config(config)
+    harness = cfg.harnesses["pi-srt"]
+    assert harness["sandbox_settings"] == str(tmp_path / "sandbox/srt-settings.json")
+
+    agent = AgentConfig(harness="pi-srt", prompt=Path("p"))
+    cmd = build_command(harness, agent, "prompt", Path("f"))
+    assert cmd[:3] == ["srt", "--settings", str(tmp_path / "sandbox/srt-settings.json")]
+    assert "pi" in cmd and "{srt_settings}" not in " ".join(cmd)
+
+
+def test_workflow_sandbox_settings_exist() -> None:
+    cfg = load_config(ROOT / "workflow.yaml")
+    for name, harness in cfg.harnesses.items():
+        path = sandbox_settings_path(harness)
+        if path is not None:
+            assert path.exists(), f"{name}: {path} fehlt"

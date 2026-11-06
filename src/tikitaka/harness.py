@@ -112,7 +112,8 @@ def build_command(
         args += harness.get("mcp_args") or []
     subst = {
         "{prompt}": prompt, "{prompt_file}": str(prompt_file), "{model}": agent.model or "",
-        "{session_uuid}": session_id or "", "{session_hex}": (session_id or "").replace("-", ""), **(mcp or {}),
+        "{session_uuid}": session_id or "", "{session_hex}": (session_id or "").replace("-", ""),
+        "{srt_settings}": str(harness.get("sandbox_settings") or ""), **(mcp or {}),
     }
     return [_substitute(arg, subst) for arg in args]
 
@@ -126,6 +127,12 @@ def mcp_env(harness: dict, mcp: dict[str, str] | None) -> dict[str, str]:
 
 def harness_available(harness: dict) -> bool:
     return shutil.which(str(harness["cmd"][0])) is not None
+
+
+def sandbox_settings_path(harness: dict) -> Path | None:
+    """Die Settings-Datei für srt (`sandbox_settings` im Harness), falls der Harness sandboxed läuft."""
+    path = harness.get("sandbox_settings")
+    return Path(path) if path else None
 
 
 def _stop_group(proc: subprocess.Popen) -> None:

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .config import PROJECT_CONFIG, PROJECT_TEMPLATE, load_config, project_config_path
-from .harness import harness_available
+from .harness import harness_available, sandbox_settings_path
 from .orchestrator import Orchestrator, list_runs
 from .preflight import model_problems, probe_agents
 
@@ -65,8 +65,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for name, harness in cfg.harnesses.items():
         found = harness_available(harness)
         mark = "✓" if found else ("✗" if name in used else "·")
-        print(f"{mark} harness {name:<10} ({harness['cmd'][0]}){'' if name in used else '  [nicht verwendet]'}")
+        hint = ""
+        if not found and name in used and harness["cmd"][0] == "srt":
+            hint = "  ← npm install -g @anthropic-ai/sandbox-runtime"
+        print(f"{mark} harness {name:<10} ({harness['cmd'][0]}){'' if name in used else '  [nicht verwendet]'}{hint}")
         ok &= found or name not in used
+        sandbox = sandbox_settings_path(harness)
+        if sandbox is not None:
+            exists = sandbox.exists()
+            mark = "✓" if exists else ("✗" if name in used else "·")
+            print(f"{mark} sandbox settings {sandbox}{'' if exists else '  ← fehlt'}")
+            ok &= exists or name not in used
     for tool in ("git", "openspec", "uv"):
         found = shutil.which(tool) is not None
         print(f"{'✓' if found else '✗'} {tool}")
