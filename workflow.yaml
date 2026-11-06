@@ -1,16 +1,16 @@
 # tikitaka – Workflow-Konfiguration
 #
 # Rollen -> Harness. Kombinationen frei tauschbar, z.B.
-#   pi-srt + opencode, opencode + opencode, kiro + opencode ...
+#   pi + opencode, opencode + opencode, kiro + opencode ...
 
 agents:
   # Builder (Spec + Code): Pi mit DeepSeek V4.1 (Hagrid) · Reviewer: dasselbe Modell.
   # Für unterschiedliche blinde Flecken den Reviewer auf ein anderes Modell legen, z.B.
   #   spec_reviewer: { harness: pi, model: "lmstudio/qwen3.8-27b-splash", ... }
-  spec_builder:  { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-builder.md }
-  spec_reviewer: { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
-  code_builder:  { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/code-builder.md }
-  code_reviewer: { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/code-reviewer.md, readonly: true }
+  spec_builder:  { harness: pi, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-builder.md }
+  spec_reviewer: { harness: pi, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
+  code_builder:  { harness: pi, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/code-builder.md }
+  code_reviewer: { harness: pi, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/code-reviewer.md, readonly: true }
   # Optional pro Agent: model: "provider/model" (pi: `pi --list-models` zeigt die verfügbaren).
   # Tipp: Builder und Reviewer mit unterschiedlichen Modellen -> unterschiedliche blinde Flecken.
 
@@ -119,7 +119,6 @@ harnesses:
   # Reviewer ohne bash: read/grep/find/ls können nichts schreiben (Diff liegt als Datei im Prompt).
   # Achtung: `--tools` ist eine Allowlist – MCP-Tools müssen dort genannt werden, sonst sind sie
   # nicht direkt deklariert (ohne `--tools` sind sie es).
-  # Sandbox-Variante: cmd: [/Users/michaelkrech/_work/srt/pi-srt, -p, "{prompt}"] (siehe srt-README).
   pi:
     cmd: [pi, -p, "{prompt}"]
     model_args: [--model, "{model}"]
@@ -135,17 +134,21 @@ harnesses:
     blocked_patterns:
       - "Permission denied"
 
-  # Pi unter Anthropics Sandbox Runtime (srt): Dateisystem- und Netzwerk-Isolation pro Agentenaufruf,
-  # ohne Container. srt installieren: npm install -g @anthropic-ai/sandbox-runtime.
-  # Settings liegen im Repo (sandbox/srt-settings.json, relativ zur workflow.yaml aufgelöst):
-  #   allowWrite ["."] = das Projekt (cwd) – dorthin schreiben Builder, Checks und der MCP-Server
-  #   allowWrite ["~/.pi"] = Sessions/Settings von Pi; denyRead u.a. ~/.ssh
-  #   network.allowedDomains = Modell-Provider (hier Hagrid) – alles andere ist dicht
-  # Hinweis: srt setzt NO_PROXY inkl. privater CIDR-Bereiche. Clients, die das auswerten (curl),
-  # verbinden direkt und scheitern – Pi/undici geht durch den Proxy, deshalb funktioniert es hier.
-  pi-srt:
-    cmd: [srt, --settings, "{srt_settings}", pi, -p, "{prompt}"]
-    sandbox_settings: sandbox/srt-settings.json
+  # Pi unter macOS-Seatbelt (sandbox-exec): Dateisystem-Isolation pro Agentenaufruf, ohne Proxy und ohne Container.
+  # Profil im Repo (sandbox/pi-seatbelt.sb, relativ zur workflow.yaml aufgelöst):
+  #   schreiben nur im Projekt (cwd), in ~/.pi, ~/.cache, ~/.npm und Temp; ~/.pi/agent/auth.json schreibgeschützt
+  #   lesen überall außer ~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh
+  #   Netzwerk ausgehend nur zu localhost und Port 8888 (Hagrid) – Seatbelt filtert nach Port, nicht nach Host
+  # Pfade werden aufgelöst (pwd -P), weil Seatbelt echte Pfade vergleicht (/tmp -> /private/tmp).
+  pi-seatbelt:
+    cmd:
+      - sh
+      - -c
+      - 'exec sandbox-exec -f "$0" -D PROJECT="$(pwd -P)" -D HOME="$HOME" -D TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" pi "$@"'
+      - "{sandbox_profile}"
+      - -p
+      - "{prompt}"
+    sandbox_profile: sandbox/pi-seatbelt.sb
     model_args: [--model, "{model}"]
     session_args: [--session-id, "{session_uuid}"]
     resume_args: [--session-id, "{session_uuid}"]
@@ -158,6 +161,7 @@ harnesses:
       - "HTTP (401|429|5\\d\\d)"
     blocked_patterns:
       - "Permission denied"
+      - "Operation not permitted"
 
   # Kiro CLI – Flags vor Nutzung mit `kiro-cli chat --help` prüfen
   kiro:

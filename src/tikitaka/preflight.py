@@ -38,7 +38,7 @@ def available_models(harness: dict) -> set[str] | None:
     return models or None
 
 
-def _base_id(model: str) -> str:
+def base_model_id(model: str) -> str:
     return model.split("#", 1)[0]  # provider/model#variant
 
 
@@ -52,9 +52,9 @@ def model_problems(cfg: Config) -> list[str]:
         if agent.harness not in cache:
             cache[agent.harness] = available_models(cfg.harnesses[agent.harness])
         known = cache[agent.harness]
-        if known is None or _base_id(agent.model) in known:
+        if known is None or base_model_id(agent.model) in known:
             continue
-        close = difflib.get_close_matches(_base_id(agent.model), sorted(known), n=3, cutoff=0.5)
+        close = difflib.get_close_matches(base_model_id(agent.model), sorted(known), n=3, cutoff=0.5)
         hint = f" – meintest du: {', '.join(close)}?" if close else ""
         problems.append(f"{role}: Modell '{agent.model}' ist im Harness '{agent.harness}' nicht bekannt{hint}")
     return problems

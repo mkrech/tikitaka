@@ -13,7 +13,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -23,10 +22,11 @@ from pathlib import Path
 import yaml
 
 from .config import PROJECT_CONFIG, ROLES, RUN_DIRS, apply_project_config, load_config, project_config_path
-from .gates import FEEDBACK_HEADING, parse_gate_file
+from .gates import FEEDBACK_HEADING, normalize_decision, parse_gate_file
 from .harness import project_env, strip_ansi
 from .mcp_server import read_questions
 from .orchestrator import ProjectBusy, acquire_project_lock, dirty_files, dirty_message
+from .preflight import available_models, base_model_id
 
 PID_FILE = "orchestrator.pid"
 LOG_FILE = "orchestrator.log"
@@ -346,15 +346,34 @@ ROLE_GROUPS = {
 }
 
 
-def list_models(name_filter: str | None = None) -> list[str]:
-    """Modell-IDs, die OpenCode kennt (Format provider/model) – optional gefiltert."""
-    if not shutil.which("opencode"):
-        raise CoachError("opencode ist nicht installiert oder nicht im PATH.")
+def _load(config: str | Path):
     try:
-        p = subprocess.run(["opencode", "models"], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        raise CoachError("`opencode models` hat nicht rechtzeitig geantwortet.") from None
-    models = [line.strip() for line in strip_ansi(p.stdout).splitlines() if "/" in line and " " not in line.strip()]
+        return load_config(config)
+    except ValueError as exc:
+        raise CoachError(str(exc)) from None
+
+
+def default_harness(cfg) -> str:
+    """Der Harness, den die meisten Rollen in workflow.yaml nutzen (bei Gleichstand der des spec_builder)."""
+    names = [cfg.agents[role].harness for role in ROLES]
+    return max(names, key=lambda name: (names.count(name), -names.index(name)))
+
+
+def _harness_models(cfg, name: str) -> list[str] | None:
+    if name not in cfg.harnesses:
+        raise CoachError(f"Harness '{name}' ist in workflow.yaml nicht definiert – erlaubt: {', '.join(cfg.harnesses)}.")
+    known = available_models(cfg.harnesses[name])
+    return sorted(known) if known is not None else None
+
+
+def list_models(config: str | Path, name_filter: str | None = None, harness: str | None = None) -> list[str]:
+    """Modell-IDs (provider/model), die ein Harness kennt – über sein `models_cmd`, z.B. `pi --list-models`.
+    Ohne harness: der Standard-Harness aus workflow.yaml. Optional nach Namen gefiltert."""
+    cfg = _load(config)
+    name = harness or default_harness(cfg)
+    models = _harness_models(cfg, name)
+    if models is None:
+        raise CoachError(f"Harness '{name}' kann seine Modelle nicht auflisten (models_cmd fehlt oder schlägt fehl).")
     if name_filter:
         models = [m for m in models if name_filter.lower() in m.lower()]
     return models
@@ -427,15 +446,18 @@ def set_agents(
     wanted = _expand_roles(models)
     current = effective_agents(config, root)
     if validate:
-        known: list[str] | None = None
+        cfg = _load(config)
+        cache: dict[str, list[str] | None] = {}
         for role, model in wanted.items():
-            if (harness or current[role]["harness"]) != "opencode":
-                continue
-            known = known if known is not None else list_models()
-            if model not in known:
-                close = difflib.get_close_matches(model, known, n=3, cutoff=0.3)
-                raise CoachError(f"OpenCode kennt das Modell '{model}' nicht."
-                                 + (f" Meintest du: {', '.join(close)}?" if close else " Siehe list_models."))
+            target = harness or current[role]["harness"]
+            if target not in cache:
+                cache[target] = _harness_models(cfg, target)
+            known = cache[target]
+            if known is None or base_model_id(model) in known:
+                continue  # Harness ohne Modellliste: nicht prüfbar
+            close = difflib.get_close_matches(base_model_id(model), known, n=3, cutoff=0.3)
+            raise CoachError(f"Harness '{target}' kennt das Modell '{model}' nicht."
+                             + (f" Meintest du: {', '.join(close)}?" if close else f" Siehe list_models(harness='{target}')."))
     cfg_file = project_config_path(root)
     text = cfg_file.read_text() if cfg_file.exists() else ""
     existing = ((yaml.safe_load(text) or {}).get("agents") or {}) if text else {}
@@ -520,6 +542,7 @@ def decide(project: str | Path, change: str, decision: str, feedback: str = "") 
     gate = pending_gate(run_dir)
     if gate is None:
         raise CoachError(f"Lauf '{change}' wartet nicht an einem Human Gate.")
+    decision = normalize_decision(decision)
     if decision not in gate["options"]:
         raise CoachError(f"Ungültige Entscheidung '{decision}' – erlaubt: {', '.join(gate['options'])}.")
     if decision in ("changes", "spec_change") and not feedback.strip():

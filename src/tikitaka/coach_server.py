@@ -71,11 +71,12 @@ def build_server(config: Path) -> MCPServer:
         return call(coach.compare_runs, runs)
 
     @server.tool(description=(
-        "Modell-IDs, die OpenCode kennt (provider/model), optional gefiltert, z.B. filter='deepseek'. "
+        "Modell-IDs (provider/model), die ein Harness kennt, optional gefiltert, z.B. filter='deepseek'. "
+        "harness optional (Standard: der Harness der meisten Rollen in workflow.yaml, meist pi). "
         "Vor set_agents aufrufen, um gültige IDs zu bekommen."
     ))
-    def list_models(filter: str | None = None) -> list[str]:
-        return call(coach.list_models, filter)
+    def list_models(filter: str | None = None, harness: str | None = None) -> list[str]:
+        return call(coach.list_models, config, filter, harness)
 
     @server.tool(description="Welche Rolle (spec/code builder/reviewer) in einem Projekt mit welchem Harness und Modell läuft.")
     def get_agents(project: str) -> dict:
@@ -86,8 +87,8 @@ def build_server(config: Path) -> MCPServer:
         "Die Änderung gilt erst ab dem nächsten Start oder resume_run, also ggf. vorher stop_run. "
         "Abgelehnt, solange ein Agent arbeitet. "
         "models: {rolle: 'provider/model'} mit Rollen spec_builder, spec_reviewer, code_builder, code_reviewer "
-        "oder builder / reviewer / all für mehrere. harness optional (Standard: wie bisher, meist opencode). "
-        "Unbekannte OpenCode-Modelle werden mit Vorschlägen abgelehnt."
+        "oder builder / reviewer / all für mehrere. harness optional (Standard: wie bisher, meist pi). "
+        "Modelle, die der Harness nicht kennt, werden mit Vorschlägen abgelehnt."
     ))
     def set_agents(project: str, models: dict[str, str], harness: str | None = None) -> dict:
         return call(coach.set_agents, config, project, models, harness)

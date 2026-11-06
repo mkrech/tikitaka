@@ -103,20 +103,40 @@ def test_log_tail_escapes_nul_bytes(tmp_path: Path) -> None:
     assert "\\x00" in coach.log_tail(tmp_path, "c") and "\x00" not in coach.log_tail(tmp_path, "c")
 
 
-def test_set_agents_writes_project_config_and_validates_models(tmp_path: Path, monkeypatch) -> None:
+def _config_with_model_list(tmp_path: Path) -> Path:
+    """Config mit einem zweiten Harness `pi`, dessen models_cmd zwei Modelle auflistet."""
     config = write_config(tmp_path)
     cfg = yaml.safe_load(config.read_text())
-    cfg["harnesses"]["opencode"] = cfg["harnesses"]["fake"]  # Validierung greift nur für opencode
+    cfg["harnesses"]["pi"] = dict(cfg["harnesses"]["fake"],
+                                  models_cmd=[sys.executable, "-c", "print('lmstudio/qwen'); print('hagrid/deepseek-v4')"])
     config.write_text(yaml.safe_dump(cfg))
+    return config
+
+
+def test_list_models_uses_the_models_cmd_of_the_harness(tmp_path: Path) -> None:
+    config = _config_with_model_list(tmp_path)
+    assert coach.list_models(config, harness="pi") == ["hagrid/deepseek-v4", "lmstudio/qwen"]
+    assert coach.list_models(config, "qwen", harness="pi") == ["lmstudio/qwen"]
+    # Standard ist der Harness der meisten Rollen – hier `fake`, der keine Modelle auflisten kann
+    with pytest.raises(coach.CoachError, match="fake"):
+        coach.list_models(config)
+    with pytest.raises(coach.CoachError, match="nicht definiert"):
+        coach.list_models(config, harness="gibtsnicht")
+
+
+def test_set_agents_writes_project_config_and_validates_models(tmp_path: Path) -> None:
+    config = _config_with_model_list(tmp_path)
     project = tmp_path / "proj"
     project.mkdir()
     (project / ".tikitaka.yaml").write_text("# Kommentar bleibt\ntimeout_seconds: 99\n")
-    monkeypatch.setattr(coach, "list_models", lambda name_filter=None: ["lmstudio/qwen", "hagrid/deepseek-v4"])
 
-    agents = coach.set_agents(config, project, {"reviewer": "hagrid/deepseek-v4", "code_builder": "lmstudio/qwen"},
-                              harness="opencode")
-    assert agents["spec_reviewer"] == agents["code_reviewer"] == {"harness": "opencode", "model": "hagrid/deepseek-v4"}
-    assert agents["code_builder"]["model"] == "lmstudio/qwen" and agents["spec_builder"]["harness"] == "fake"
+    with pytest.raises(coach.CoachError, match="Meintest du: hagrid/deepseek-v4"):
+        coach.set_agents(config, project, {"reviewer": "hagrid/deepseek-v3"}, harness="pi")
+
+    agents = coach.set_agents(config, project, {"reviewer": "hagrid/deepseek-v4", "code_builder": "lmstudio/qwen#high"},
+                              harness="pi")
+    assert agents["spec_reviewer"] == agents["code_reviewer"] == {"harness": "pi", "model": "hagrid/deepseek-v4"}
+    assert agents["code_builder"]["model"] == "lmstudio/qwen#high" and agents["spec_builder"]["harness"] == "fake"
 
     text = (project / ".tikitaka.yaml").read_text()
     assert "# Kommentar bleibt" in text and "timeout_seconds: 99" in text

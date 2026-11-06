@@ -12,8 +12,27 @@ from typing import Protocol
 
 DECISIONS = ("approve", "changes", "reject", "spec_change")
 FEEDBACK_HEADING = "## Dein Feedback"
-_DECISION = re.compile(r"^decision:\s*([a-z_]+)", re.M)
+_DECISION = re.compile(r"^decision:\s*([A-Za-z_ -]+)", re.M)
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+# Schreibweisen, die im Gate landen dürfen: "approved" ist so naheliegend wie "approve".
+_ALIASES = {
+    "approve": ("approve", "approved", "approves", "ok", "okay", "yes", "ja", "accept", "accepted",
+                "freigabe", "freigegeben", "genehmigt", "go"),
+    "changes": ("changes", "change", "changed", "feedback", "revise", "revision", "changes_requested",
+                "changesrequested", "änderungen", "aenderungen"),
+    "reject": ("reject", "rejected", "no", "nein", "abort", "abbrechen", "decline", "declined", "stop"),
+    "spec_change": ("spec_change", "specchange", "spec_change_requested", "spec-changes", "spec_changes"),
+}
+
+
+def normalize_decision(value: str) -> str:
+    """Macht aus "Approved", "approved" oder "approve" einheitlich "approve"."""
+    token = re.sub(r"[\s-]+", "_", value.strip().lower())
+    for decision, aliases in _ALIASES.items():
+        if token in aliases:
+            return decision
+    return token
 
 
 @dataclass
@@ -28,10 +47,13 @@ class Gate(Protocol):
 
 def parse_gate_file(text: str, options: tuple[str, ...] = DECISIONS) -> GateDecision | None:
     m = _DECISION.search(text)
-    if not m or m.group(1) not in options:
+    if not m:
+        return None
+    decision = normalize_decision(m.group(1))
+    if decision not in options:
         return None
     feedback = text.split(FEEDBACK_HEADING, 1)[1] if FEEDBACK_HEADING in text else ""
-    return GateDecision(m.group(1), _COMMENT.sub("", feedback).strip())
+    return GateDecision(decision, _COMMENT.sub("", feedback).strip())
 
 
 def notify(title: str, message: str) -> None:

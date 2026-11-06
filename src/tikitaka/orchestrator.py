@@ -527,7 +527,7 @@ class Orchestrator:
                 if attempt > TRANSIENT_RETRIES or not is_transient_failure(harness, res):
                     break
                 reason = (error_tail(res.output) or [f"Exit-Code {res.returncode}"])[-1]
-                print(f"  ↻ Vorübergehender Fehler ({reason}) – neuer Versuch in {TRANSIENT_DELAY_SECONDS}s")
+                print(f"  ↻ Vorübergehender Fehler ({reason}) – Versuch {attempt + 1}/{TRANSIENT_RETRIES + 1} in {TRANSIENT_DELAY_SECONDS}s")
                 self._log("agent_retry", role=role, step=name, reason=reason)
                 time.sleep(TRANSIENT_DELAY_SECONDS)
         except FileNotFoundError as exc:

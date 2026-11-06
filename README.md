@@ -54,13 +54,13 @@ uv run tikitaka coach
 
 At a human gate, open `<project>/.tikitaka/runs/<change>/gate-<phase>-<n>.md`, set `decision:` to `approve`,
 `changes` (feedback under `## Dein Feedback`) or `reject` and save – the run continues.
+Common spellings are accepted too: `approved`, `ok`, `yes`, `ja`, `APPROVE`, `changes_requested`, `rejected` …
 
 ## Setup
 
 ```bash
 uv sync
-npm install -g @fission-ai/openspec                # if not installed yet
-npm install -g @anthropic-ai/sandbox-runtime      # `srt`, only needed for the pi-srt harness
+npm install -g @fission-ai/openspec   # if not installed yet
 uv run tikitaka doctor               # checks harnesses, tools and whether the configured models exist
 uv run tikitaka doctor --probe       # additionally sends every model one tiny request (finds blocked models, expired logins)
 ```
@@ -72,8 +72,8 @@ Roles and harnesses are configured in [workflow.yaml](workflow.yaml). Switching 
 
 ```yaml
 agents:
-  spec_builder:  { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-builder.md }
-  spec_reviewer: { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
+  spec_builder:  { harness: pi, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-builder.md }
+  spec_reviewer: { harness: pi, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
 ```
 
 The prompts for the four roles live in [prompts/](prompts/).
@@ -82,12 +82,12 @@ The prompts for the four roles live in [prompts/](prompts/).
 
 | Harness | Command | Notes |
 |---|---|---|
-| `pi-srt` | `srt --settings … pi -p` | Pi inside the srt sandbox (see below) |
 | `pi` | `pi -p` | no background service, whole agent in the subprocess |
+| `pi-seatbelt` | `sandbox-exec -f … pi -p` | Pi inside a macOS Seatbelt sandbox (see below) |
 | `opencode` | `opencode run` | background service, so MCP comes from a project file (see below) |
 | `kiro` | `kiro-cli chat --no-interactive` | flags may differ between Kiro versions |
 
-**Pi specifics** (`pi`, `pi-srt`):
+**Pi specifics** (`pi`, `pi-seatbelt`):
 
 - `models_cmd` is `pi --list-models`, so a model must be written as `provider/model` (e.g. `custom-openai/DeepSeek-V4.1-Flash-1017`).
   Models come from `~/.pi/agent/models.json`; `pi --list-models` prints the available ones.
@@ -97,43 +97,25 @@ The prompts for the four roles live in [prompts/](prompts/).
 - The reviewer gets no `bash`, so it cannot write anything; the diff is handed to it as a file.
 - Sessions run with `--session-id <uuid>` so a follow-up question can resume the same conversation.
 
-### Sandboxing the agents (`pi-srt`)
+### Sandboxing the agents (`pi-seatbelt`, macOS)
 
-The harness `pi-srt` runs Pi inside Anthropic's [Sandbox Runtime](https://github.com/anthropics/sandbox-runtime)
-(`srt`): every agent call is a single sandboxed process tree with filesystem and network isolation, no container needed.
-
-```bash
-npm install -g @anthropic-ai/sandbox-runtime   # provides `srt`
-uv run tikitaka doctor                        # also checks `srt` and the settings file
-```
-
-The rules live in the repo: [sandbox/srt-settings.json](sandbox/srt-settings.json). The harness references them via
-`sandbox_settings`, which is resolved relative to `workflow.yaml` and passed as `{srt_settings}`:
-
-```yaml
-harnesses:
-  pi-srt:
-    cmd: [srt, --settings, "{srt_settings}", pi, -p, "{prompt}"]
-    sandbox_settings: sandbox/srt-settings.json
-```
-
-What the shipped settings do:
+`pi-seatbelt` runs every agent call under macOS Seatbelt (`sandbox-exec`, ships with macOS). The process can talk to
+the model server directly, because nothing sits between Pi and the server: there is no proxy and no container.
+The profile lives in the repo: [sandbox/pi-seatbelt.sb](sandbox/pi-seatbelt.sb). The harness key `sandbox_profile`
+is resolved relative to `workflow.yaml` and passed as `{sandbox_profile}`. The project directory (cwd), `HOME` and
+`TMPDIR` go in as `-D` parameters, as real paths (`pwd -P`), because Seatbelt compares resolved paths.
 
 | Rule | Effect |
 |---|---|
-| `filesystem.allowWrite: ["."]` | agents write only inside the target project (the run's cwd) – the MCP server's `mcp/` files are in there too |
-| `filesystem.allowWrite: ["~/.pi"]` | Pi keeps its sessions and settings; `~/.pi/agent/auth.json` is `denyWrite` |
-| `filesystem.denyRead` | `~/.ssh`, `~/.aws`, `~/.config/gh` are unreadable |
-| `network.allowedDomains` | only the model provider is reachable – everything else gets `403 host is not on the allow list` |
+| write | only the project, `~/.pi`, `~/.cache`, `~/.npm` and the temp dirs – `~/.pi/agent/auth.json` stays read-only |
+| read | everything except `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh` |
+| network | outbound only to `localhost` and port `8888` (the model server) – Seatbelt filters by port, not by host |
 
-The deterministic checks (`openspec validate`, `pytest`) still run outside the sandbox: they are shell commands from
-your `workflow.yaml`, not model output. If you want them isolated too, wrap them in `srt` as well.
-
-**`NO_PROXY` caveat:** `srt` always sets `NO_PROXY` to include the private ranges (`10/8`, `172.16/12`, `192.168/16`).
-A client that interprets these CIDR entries (curl does) then dials a LAN model server directly, which the sandbox forbids.
-Pi's undici proxy agent matches `NO_PROXY` entries as host names only, so it goes through srt's filtering proxy and works.
-If a model server stops answering after an undici update, override `NO_PROXY`/`no_proxy` to `localhost,127.0.0.1,::1`
-for the harness command.
+Switch a role over per project in `.tikitaka.yaml`, e.g. `code_builder: { harness: pi-seatbelt }`.
+Blocked access shows up as `Operation not permitted`. It is listed in `blocked_patterns`, so an agent that keeps
+running into the sandbox gets stopped. If your model server uses a different port, change the last rule in the
+profile. The first network access from the sandbox may trigger macOS's *Local Network* prompt. The checks
+(`openspec validate`, `pytest`) run outside the sandbox.
 
 ## Example: calculator
 
@@ -160,9 +142,12 @@ Prompts and harness definitions stay global. `checks.<phase>` replaces the globa
 
 ```yaml
 agents:
-  spec_reviewer: { model: "hagrid/GLM-5.3-Flash-EXL3" }
-  code_reviewer: { model: "hagrid/GLM-5.3-Flash-EXL3" }
+  code_builder:  { harness: pi-seatbelt }
+  spec_reviewer: { harness: opencode, model: "hagrid/GLM-5.3-Flash-EXL3" }
 ```
+
+Model IDs depend on the harness: Pi writes them as in `pi --list-models` (e.g. `custom-openai/…`),
+OpenCode as in `opencode models` (e.g. `hagrid/…`).
 
 Besides shell commands (which must exit 0) there are **smoke checks**: a single command that runs for several
 inputs and whose output is inspected – e.g. "no invalid input may produce a traceback":
@@ -244,8 +229,8 @@ interpretation is up to the model of your session.
 | `gate_briefing(project, change)` | Everything needed for the gate decision: conflict, findings, agent questions (deduplicated), builder, checks, removed tests, write-protection violations |
 | `run_smoke(project, extra_inputs?)` | Try the program with the smoke inputs from `.tikitaka.yaml` (plus your own) |
 | `compare_runs(runs)` | Compare runs: agent minutes, cycles, decisions, findings, follow-up requests, errors |
-| `list_models(filter?)` | Model IDs known to OpenCode (`provider/model`) |
-| `get_agents(project)` / `set_agents(project, models, harness?)` | Read/set the models per role of a project – also `builder`, `reviewer`, `all`; unknown models are rejected with suggestions. Takes effect from the next start or `resume_run`, not for a run in progress |
+| `list_models(filter?, harness?)` | Model IDs a harness knows (`provider/model`, via its `models_cmd`, e.g. `pi --list-models`); default: the harness most roles use |
+| `get_agents(project)` / `set_agents(project, models, harness?)` | Read/set the models per role of a project – also `builder`, `reviewer`, `all`; models the target harness does not know are rejected with suggestions. Takes effect from the next start or `resume_run`, not for a run in progress |
 | `start_run` / `resume_run` / `stop_run` | Start runs in the background (optionally with `models`), resume them, stop them (like Ctrl+C) |
 | `decide(project, change, decision, confirmed_by_human, feedback?)` | Write the decision into the gate – **only after your confirmation** |
 
@@ -328,9 +313,9 @@ may only create ignored files, otherwise there is a warning (e.g. add `.coverage
 Files changed by hand in the project are reset during a review as well (and then preserved in the patch), as is
 `.tikitaka.yaml` during any agent run.
 
-With the `pi-srt` harness the sandbox backs this up at OS level: a read-only agent has no `bash`, `edit` or `write`
-tool, and even if a tool tried to write outside the project, Seatbelt refuses it (`Operation not permitted`).
-The git-based guard still runs – it is the second line of defence and also covers harnesses without a sandbox.
+With `pi-seatbelt` the sandbox adds a second layer at OS level: writes outside the project fail with
+`Operation not permitted`, whatever tool the agent uses. The git-based guard still runs and also covers harnesses
+without a sandbox.
 
 ### Human gate
 
@@ -345,6 +330,8 @@ decision: pending   # approve | changes | reject
 ```
 
 Set it to `changes`, write your feedback under `## Dein Feedback`, save – and the workflow continues.
+At the code gate `spec_change` (with feedback) sends the run back to the spec phase.
+`approved`, `ok`, `yes`, `ja`, `APPROVE` (and similar) count as `approve`, `rejected` as `reject`.
 With Ctrl+C you can abort the waiting and resume later:
 
 ```bash

@@ -8,7 +8,7 @@ import pytest
 
 from tikitaka.config import AgentConfig, Config, load_config
 from tikitaka.gates import GateDecision, ScriptedGate, parse_gate_file
-from tikitaka.harness import build_command, sandbox_settings_path, strip_ansi
+from tikitaka.harness import build_command, sandbox_profile_path, strip_ansi
 from tikitaka import orchestrator
 from tikitaka.orchestrator import DirtyProject, Orchestrator, ProjectBusy, acquire_project_lock, dirty_files
 from tikitaka.review import Review, dropped_findings, extract_json, parse_review
@@ -668,32 +668,43 @@ def test_workflow_gives_each_harness_a_session_of_its_own() -> None:
         assert "--continue" not in second
 
 
-def test_sandboxed_harness_gets_the_settings_path_from_the_config_dir(tmp_path: Path) -> None:
-    """`sandbox_settings` wird relativ zur workflow.yaml aufgelöst und landet als {srt_settings} im Kommando."""
+def test_sandbox_profile_is_resolved_from_the_config_dir(tmp_path: Path) -> None:
+    """`sandbox_profile` wird relativ zur workflow.yaml aufgelöst und landet als {sandbox_profile} im Kommando."""
     prompts = ROOT / "prompts"
     roles = "".join(
-        f"  {role}: {{ harness: pi-srt, prompt: {prompts / (role.replace('_', '-') + '.md')} }}\n"
+        f"  {role}: {{ harness: pi-seatbelt, prompt: {prompts / (role.replace('_', '-') + '.md')} }}\n"
         for role in ("spec_builder", "spec_reviewer", "code_builder", "code_reviewer")
     )
     config = tmp_path / "workflow.yaml"
     config.write_text(
         "agents:\n" + roles
-        + "harnesses:\n  pi-srt:\n    cmd: [srt, --settings, \"{srt_settings}\", pi, -p, \"{prompt}\"]\n"
-        + "    sandbox_settings: sandbox/srt-settings.json\n"
+        + "harnesses:\n  pi-seatbelt:\n    cmd: [sh, -c, 'exec sandbox-exec -f \"$0\" pi \"$@\"', \"{sandbox_profile}\", -p, \"{prompt}\"]\n"
+        + "    sandbox_profile: sandbox/pi.sb\n"
     )
     cfg = load_config(config)
-    harness = cfg.harnesses["pi-srt"]
-    assert harness["sandbox_settings"] == str(tmp_path / "sandbox/srt-settings.json")
+    harness = cfg.harnesses["pi-seatbelt"]
+    assert harness["sandbox_profile"] == str((tmp_path / "sandbox/pi.sb").resolve())
 
-    agent = AgentConfig(harness="pi-srt", prompt=Path("p"))
-    cmd = build_command(harness, agent, "prompt", Path("f"))
-    assert cmd[:3] == ["srt", "--settings", str(tmp_path / "sandbox/srt-settings.json")]
-    assert "pi" in cmd and "{srt_settings}" not in " ".join(cmd)
+    cmd = build_command(harness, AgentConfig(harness="pi-seatbelt", prompt=Path("p")), "prompt", Path("f"))
+    assert cmd[3] == str((tmp_path / "sandbox/pi.sb").resolve())
+    assert cmd[-2:] == ["-p", "prompt"] and "{sandbox_profile}" not in " ".join(cmd)
 
 
-def test_workflow_sandbox_settings_exist() -> None:
+def test_workflow_sandbox_profiles_exist() -> None:
     cfg = load_config(ROOT / "workflow.yaml")
     for name, harness in cfg.harnesses.items():
-        path = sandbox_settings_path(harness)
+        path = sandbox_profile_path(harness)
         if path is not None:
             assert path.exists(), f"{name}: {path} fehlt"
+
+
+def test_gate_accepts_common_spellings() -> None:
+    # "approved" ist die naheliegendste Eingabe und muss wie "approve" wirken.
+    assert parse_gate_file("---\ndecision: approved\n---") == GateDecision("approve", "")
+    assert parse_gate_file("---\ndecision: APPROVE\n---") == GateDecision("approve", "")
+    assert parse_gate_file("---\ndecision: approve  # approved | changes | reject\n---") == GateDecision("approve", "")
+    assert parse_gate_file("---\ndecision: changes_requested\n---\n## Dein Feedback\nMehr Tests\n").decision == "changes"
+    assert parse_gate_file("---\ndecision: spec-change\n---\n## Dein Feedback\nAnders\n").decision == "spec_change"
+    assert parse_gate_file("---\ndecision: rejected\n---").decision == "reject"
+    assert parse_gate_file("---\ndecision: pending\n---") is None
+    assert parse_gate_file("---\ndecision: vielleicht\n---") is None

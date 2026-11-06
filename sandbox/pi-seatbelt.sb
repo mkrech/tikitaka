@@ -1,0 +1,39 @@
+;; tikitaka – Seatbelt-Profil für Pi (macOS sandbox-exec), ohne Proxy.
+;; Parameter (-D): PROJECT (Zielprojekt = cwd), HOME, TMPDIR
+;;
+;; Dateisystem: lesen fast überall, außer Geheimnissen; schreiben nur im Projekt, in ~/.pi und in Temp-Verzeichnissen.
+;; Netzwerk: nur ausgehend zu den unten erlaubten Ports (Seatbelt filtert nach Port, nicht nach Host) und lokale Sockets.
+(version 1)
+(allow default)
+
+;; --- Schreiben ---
+(deny file-write*)
+(allow file-write*
+  (subpath (param "PROJECT"))
+  (subpath (string-append (param "HOME") "/.pi"))
+  (subpath (string-append (param "HOME") "/.npm"))
+  (subpath (string-append (param "HOME") "/.cache"))
+  (subpath (param "TMPDIR"))
+  (subpath "/private/tmp")
+  (subpath "/private/var/folders")
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/tty")
+  (regex #"^/dev/ttys[0-9]+$")
+  (regex #"^/dev/fd/"))
+(deny file-write* (literal (string-append (param "HOME") "/.pi/agent/auth.json")))
+
+;; --- Lesen: Geheimnisse sperren ---
+(deny file-read*
+  (subpath (string-append (param "HOME") "/.ssh"))
+  (subpath (string-append (param "HOME") "/.aws"))
+  (subpath (string-append (param "HOME") "/.gnupg"))
+  (subpath (string-append (param "HOME") "/.config/gh")))
+
+;; --- Netzwerk ---
+(deny network-outbound)
+(allow network-outbound
+  (remote unix-socket)
+  (remote ip "localhost:*")
+  ;; Modellserver (Hagrid, 192.168.178.106:8888)
+  (remote ip "*:8888"))

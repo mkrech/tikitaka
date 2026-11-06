@@ -72,12 +72,12 @@ def load_config(path: str | Path) -> Config:
         )
 
     harnesses = raw.get("harnesses") or {}
-    # sandbox_settings relativ zur workflow.yaml auflösen (Pfad landet im Harness-Kommando)
+    # sandbox_profile relativ zur workflow.yaml auflösen (Pfad landet als {sandbox_profile} im Harness-Kommando)
     for harness in harnesses.values():
-        sandbox = harness.get("sandbox_settings")
-        if sandbox:
-            sandbox_path = Path(sandbox)
-            harness["sandbox_settings"] = str(sandbox_path if sandbox_path.is_absolute() else (base / sandbox_path).resolve())
+        profile = harness.get("sandbox_profile")
+        if profile:
+            profile_path = Path(profile)
+            harness["sandbox_profile"] = str(profile_path if profile_path.is_absolute() else (base / profile_path).resolve())
     for role, agent in agents.items():
         if agent.harness not in harnesses:
             raise ValueError(f"{path}: Harness '{agent.harness}' für {role} ist nicht definiert")

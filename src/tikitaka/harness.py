@@ -113,7 +113,7 @@ def build_command(
     subst = {
         "{prompt}": prompt, "{prompt_file}": str(prompt_file), "{model}": agent.model or "",
         "{session_uuid}": session_id or "", "{session_hex}": (session_id or "").replace("-", ""),
-        "{srt_settings}": str(harness.get("sandbox_settings") or ""), **(mcp or {}),
+        "{sandbox_profile}": str(harness.get("sandbox_profile") or ""), **(mcp or {}),
     }
     return [_substitute(arg, subst) for arg in args]
 
@@ -129,9 +129,9 @@ def harness_available(harness: dict) -> bool:
     return shutil.which(str(harness["cmd"][0])) is not None
 
 
-def sandbox_settings_path(harness: dict) -> Path | None:
-    """Die Settings-Datei für srt (`sandbox_settings` im Harness), falls der Harness sandboxed läuft."""
-    path = harness.get("sandbox_settings")
+def sandbox_profile_path(harness: dict) -> Path | None:
+    """Das Sandbox-Profil (`sandbox_profile` im Harness), falls der Harness sandboxed läuft."""
+    path = harness.get("sandbox_profile")
     return Path(path) if path else None
 
 
