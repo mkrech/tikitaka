@@ -61,7 +61,7 @@ Common spellings are accepted too: `approved`, `ok`, `yes`, `ja`, `APPROVE`, `ch
 ```bash
 uv sync
 npm install -g @fission-ai/openspec   # if not installed yet
-uv run tikitaka doctor               # checks harnesses, tools and whether the configured models exist
+uv run tikitaka doctor               # checks harnesses, tools, the agent config dir and whether the configured models exist
 uv run tikitaka doctor --probe       # additionally sends every model one tiny request (finds blocked models, expired logins)
 ```
 
@@ -90,12 +90,51 @@ The prompts for the four roles live in [prompts/](prompts/).
 **Pi specifics** (`pi`, `pi-seatbelt`):
 
 - `models_cmd` is `pi --list-models`, so a model must be written as `provider/model` (e.g. `custom-openai/DeepSeek-V4.1-Flash-1017`).
-  Models come from `~/.pi/agent/models.json`; `pi --list-models` prints the available ones.
+  Models come from `~/.pi/agent/models.json` (the agents read it through a symlink, see below); `pi --list-models`
+  prints the available ones.
 - The harness passes `--approve` because Pi only loads the project's `.pi/mcp.json` after project trust; print mode cannot answer the trust prompt.
 - `--tools` is an **allowlist**, not a denylist: an MCP tool that no entry names is never declared to the model, even with
   `exposure: "direct"`. The read-only harness therefore lists `mcp__tikitaka__*` explicitly next to `read,grep,find,ls`.
 - The reviewer gets no `bash`, so it cannot write anything; the diff is handed to it as a file.
 - Sessions run with `--session-id <uuid>` so a follow-up question can resume the same conversation.
+- The agents run with their own config directory, see the next section.
+
+### Agent config directory (Pi)
+
+Your own Pi sessions use `~/.pi/agent`. The agents tikitaka starts get a separate one, so they do not pick up what
+you configured for yourself:
+
+```
+~/.pi/agent/                 your Pi sessions
+  models.json, auth.json
+  mcp.json                   global MCP servers, e.g. tikitaka-coach
+  settings.json, extensions/, sessions/
+
+~/.pi/tikitaka-agent/        the agents tikitaka starts (PI_CODING_AGENT_DIR)
+  models.json -> ~/.pi/agent/models.json
+  auth.json   -> ~/.pi/agent/auth.json
+  sessions/                  the agents' sessions
+  (no mcp.json, no settings.json)
+```
+
+Both Pi harnesses configure this in `workflow.yaml`:
+
+```yaml
+agent_home: { dir: ~/.pi/tikitaka-agent, link_from: ~/.pi/agent, link: [models.json, auth.json] }
+env: { PI_CODING_AGENT_DIR: "{agent_home}" }
+```
+
+- `agent_home`: tikitaka creates `dir` before every agent call (and in `doctor`) and symlinks each file in `link`
+  from `link_from`. A file you put there yourself is never replaced. A link whose target does not exist yet (e.g.
+  `auth.json` before your first login) is created anyway and starts working once the file appears; `doctor` lists
+  such links.
+- `env`: extra environment variables for the agent calls, `models_cmd` and `doctor --probe`. `~` is expanded,
+  `{agent_home}` is the resolved `dir`. The key works for every harness, not just Pi.
+
+Effects: the agents see neither your global MCP servers (a builder cannot call the coach's `decide` or `stop_run`)
+nor your extensions and settings, and their sessions stay out of your session list. Models and logins are shared.
+If the agents need a setting or an extension, put a `settings.json` into `~/.pi/tikitaka-agent`. To start over,
+delete the directory; the next run creates it again.
 
 ### Sandboxing the agents (`pi-seatbelt`, macOS)
 
@@ -107,8 +146,8 @@ is resolved relative to `workflow.yaml` and passed as `{sandbox_profile}`. The p
 
 | Rule | Effect |
 |---|---|
-| write | only the project, `~/.pi`, `~/.cache`, `~/.npm` and the temp dirs – `~/.pi/agent/auth.json` stays read-only |
-| read | everything except `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh` |
+| write | only the project, `~/.pi/tikitaka-agent`, `~/.cache`, `~/.npm` and the temp dirs – `auth.json` stays read-only, and the agent cannot create `~/.pi/tikitaka-agent/mcp.json` (no MCP servers of its own) |
+| read | everything except `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, and your own `~/.pi/agent/mcp.json` and `~/.pi/agent/sessions` |
 | network | outbound only to `localhost` and port `8888` (the model server) – Seatbelt filters by port, not by host |
 
 Switch a role over per project in `.tikitaka.yaml`, e.g. `code_builder: { harness: pi-seatbelt }`.
@@ -208,7 +247,8 @@ and rejects the wrong tool for the role. In OpenCode's Code Mode the agent finds
 `tools.tikitaka.submit_review(...)` inside `execute`; the prompts say so.
 
 **Pi:** Pi has no background service – the agent runs entirely in the subprocess tikitaka starts. Its MCP servers come from
-`<project>/.pi/mcp.json`, using the `mcpServers` format. Pi only loads that file once the project is trusted,
+`<project>/.pi/mcp.json`, using the `mcpServers` format; the agent config directory has no global `mcp.json`, so the
+tikitaka server is the only one. Pi only loads that file once the project is trusted,
 so the harness runs with `--approve`; `exposure: "direct"` puts the tools straight into the model's tool list instead of
 behind a codemode script. The file is excluded locally via `.git/info/exclude`, removed when the run ends, and a foreign
 file is never overwritten. The server reads step and role from `<run>/mcp/current.json`, exactly like OpenCode's.
@@ -239,6 +279,10 @@ Background runs write their output to `<run>/orchestrator.log`. Registering it (
 ```bash
 pi mcp add tikitaka-coach -- uv run --directory /path/to/tikitaka tikitaka --config /path/to/tikitaka/workflow.yaml coach
 ```
+
+This registers the coach in your global `~/.pi/agent/mcp.json`. The agents tikitaka starts do not see it, because
+they run with their own config directory (see *Agent config directory*), so a builder cannot call `decide` or
+`stop_run` on its own run.
 
 OpenCode (`~/.config/opencode/opencode.jsonc`):
 

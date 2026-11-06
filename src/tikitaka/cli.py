@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .config import PROJECT_CONFIG, PROJECT_TEMPLATE, load_config, project_config_path
-from .harness import harness_available, sandbox_profile_path
+from .harness import ensure_agent_home, harness_available, sandbox_profile_path
 from .orchestrator import Orchestrator, list_runs
 from .preflight import model_problems, probe_agents
 
@@ -73,6 +73,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             mark = "✓" if exists else ("✗" if name in used else "·")
             print(f"{mark} sandbox profile {profile}{'' if exists else '  ← fehlt'}")
             ok &= exists or name not in used
+        if name in used and harness.get("agent_home"):
+            try:
+                home = ensure_agent_home(harness)
+                broken = [p.name for p in sorted(home.iterdir()) if p.is_symlink() and not p.exists()]
+                hint = f"  (Symlink ohne Ziel: {', '.join(broken)})" if broken else ""
+                print(f"✓ agent home {home}{hint}")
+            except OSError as exc:
+                print(f"✗ agent home: {exc}")
+                ok = False
     for tool in ("git", "openspec", "uv"):
         found = shutil.which(tool) is not None
         print(f"{'✓' if found else '✗'} {tool}")

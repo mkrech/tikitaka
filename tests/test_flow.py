@@ -8,7 +8,7 @@ import pytest
 
 from tikitaka.config import AgentConfig, Config, load_config
 from tikitaka.gates import GateDecision, ScriptedGate, parse_gate_file
-from tikitaka.harness import build_command, sandbox_profile_path, strip_ansi
+from tikitaka.harness import build_command, ensure_agent_home, harness_env, sandbox_profile_path, strip_ansi
 from tikitaka import orchestrator
 from tikitaka.orchestrator import DirtyProject, Orchestrator, ProjectBusy, acquire_project_lock, dirty_files
 from tikitaka.review import Review, dropped_findings, extract_json, parse_review
@@ -696,6 +696,34 @@ def test_workflow_sandbox_profiles_exist() -> None:
         path = sandbox_profile_path(harness)
         if path is not None:
             assert path.exists(), f"{name}: {path} fehlt"
+
+
+def test_agent_home_links_files_and_feeds_env(tmp_path: Path, monkeypatch) -> None:
+    """agent_home legt ein eigenes Konfigurationsverzeichnis an, verlinkt Dateien daraus und landet über env beim Agenten."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / ".pi/agent"
+    source.mkdir(parents=True)
+    (source / "models.json").write_text("{}")
+    (source / "mcp.json").write_text('{"mcpServers": {"coach": {}}}')
+    harness = {
+        "cmd": ["pi"],
+        "agent_home": {"dir": "~/.pi/tikitaka-agent", "link_from": "~/.pi/agent", "link": ["models.json", "auth.json"]},
+        "env": {"PI_CODING_AGENT_DIR": "{agent_home}"},
+    }
+    env = harness_env(harness)
+    home = tmp_path / ".pi/tikitaka-agent"
+    assert env == {"PI_CODING_AGENT_DIR": str(home)}
+    assert (home / "models.json").is_symlink() and (home / "models.json").read_text() == "{}"
+    # auth.json gibt es noch nicht: der Link zeigt schon dorthin, ein späterer Login landet in ~/.pi/agent
+    assert (home / "auth.json").is_symlink() and not (home / "auth.json").exists()
+    assert not (home / "mcp.json").exists()  # globale MCP-Server bleiben draußen
+
+    # Eine eigene Datei im Agenten-Verzeichnis wird nicht überschrieben
+    (home / "models.json").unlink()
+    (home / "models.json").write_text('{"eigen": true}')
+    ensure_agent_home(harness)
+    assert not (home / "models.json").is_symlink()
+    assert harness_env({"cmd": ["x"]}) == {}
 
 
 def test_gate_accepts_common_spellings() -> None:

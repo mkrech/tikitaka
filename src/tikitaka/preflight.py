@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
 import subprocess
 import tempfile
@@ -12,7 +13,8 @@ from pathlib import Path
 
 from .config import AgentConfig, Config
 from .harness import (
-    AgentResult, build_command, error_tail, has_fake_tool_calls, is_transient_failure, project_env, strip_ansi,
+    AgentResult, build_command, error_tail, harness_env, has_fake_tool_calls, is_transient_failure, project_env,
+    strip_ansi,
 )
 
 LIST_TIMEOUT = 30
@@ -29,6 +31,7 @@ def available_models(harness: dict) -> set[str] | None:
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, errors="replace", timeout=LIST_TIMEOUT, stdin=subprocess.DEVNULL,
+            env={**os.environ, **harness_env(harness)},
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -85,7 +88,7 @@ def _probe_once(harness: dict, agent: AgentConfig, timeout: int) -> tuple[int | 
         cmd = build_command(harness, replace(agent, readonly=True), PROBE_PROMPT, cwd / "prompt.md")
         try:
             proc = subprocess.run(
-                cmd, cwd=cwd, env=project_env(cwd), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                cmd, cwd=cwd, env=project_env(cwd, harness_env(harness)), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                 errors="replace", timeout=timeout,
             )
         except subprocess.TimeoutExpired:

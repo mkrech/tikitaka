@@ -1,7 +1,8 @@
 ;; tikitaka – Seatbelt-Profil für Pi (macOS sandbox-exec), ohne Proxy.
 ;; Parameter (-D): PROJECT (Zielprojekt = cwd), HOME, TMPDIR
 ;;
-;; Dateisystem: lesen fast überall, außer Geheimnissen; schreiben nur im Projekt, in ~/.pi und in Temp-Verzeichnissen.
+;; Dateisystem: lesen fast überall, außer Geheimnissen; schreiben nur im Projekt, im Agenten-Verzeichnis
+;; ~/.pi/tikitaka-agent (PI_CODING_AGENT_DIR der Agenten) und in Temp-Verzeichnissen.
 ;; Netzwerk: nur ausgehend zu den unten erlaubten Ports (Seatbelt filtert nach Port, nicht nach Host) und lokale Sockets.
 (version 1)
 (allow default)
@@ -10,7 +11,7 @@
 (deny file-write*)
 (allow file-write*
   (subpath (param "PROJECT"))
-  (subpath (string-append (param "HOME") "/.pi"))
+  (subpath (string-append (param "HOME") "/.pi/tikitaka-agent"))
   (subpath (string-append (param "HOME") "/.npm"))
   (subpath (string-append (param "HOME") "/.cache"))
   (subpath (param "TMPDIR"))
@@ -21,10 +22,18 @@
   (literal "/dev/tty")
   (regex #"^/dev/ttys[0-9]+$")
   (regex #"^/dev/fd/"))
-(deny file-write* (literal (string-append (param "HOME") "/.pi/agent/auth.json")))
+;; auth.json bleibt schreibgeschützt; eine mcp.json im Agenten-Verzeichnis darf der Agent nicht anlegen
+;; (sonst könnte er sich selbst MCP-Server wie den Coach eintragen).
+(deny file-write*
+  (literal (string-append (param "HOME") "/.pi/agent/auth.json"))
+  (literal (string-append (param "HOME") "/.pi/tikitaka-agent/mcp.json")))
 
 ;; --- Lesen: Geheimnisse sperren ---
+;; Aus deiner eigenen Pi-Konfiguration nur die globalen MCP-Server und deine Sessions (models.json und auth.json
+;; bleiben lesbar – die Agenten nutzen sie über Symlinks).
 (deny file-read*
+  (literal (string-append (param "HOME") "/.pi/agent/mcp.json"))
+  (subpath (string-append (param "HOME") "/.pi/agent/sessions"))
   (subpath (string-append (param "HOME") "/.ssh"))
   (subpath (string-append (param "HOME") "/.aws"))
   (subpath (string-append (param "HOME") "/.gnupg"))

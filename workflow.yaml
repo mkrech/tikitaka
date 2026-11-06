@@ -55,6 +55,8 @@ notify: true
 # mcp_config_file / mcp_config_content -> stattdessen eine Projektdatei mit dem MCP-Server anlegen (für Harnesses,
 #   deren Hintergrunddienst die Umgebung des Clients ignoriert). {mcp_opencode_v2_static_config}: Schritt und Rolle
 #   liest der Server dann bei jedem Aufruf aus mcp/current.json.
+# env -> zusätzliche Umgebungsvariablen für Agenten, models_cmd und Probe (~ wird aufgelöst, {agent_home} = agent_home.dir).
+# agent_home -> eigenes Konfigurationsverzeichnis der Agenten: dir anlegen, Dateien aus link per Symlink aus link_from holen.
 # models_cmd -> listet die Modell-IDs des Harness (eine pro Zeile); `run`/`resume` und `doctor` prüfen damit die Konfiguration.
 # blocked_patterns -> Regexe für Ausgaben, die eine verweigerte Berechtigung melden. Der Lauf warnt; ab 3 Treffern in
 #   einem Aufruf wird der Agent beendet, weil er ohne Zugriff nur rät.
@@ -119,6 +121,9 @@ harnesses:
   # Reviewer ohne bash: read/grep/find/ls können nichts schreiben (Diff liegt als Datei im Prompt).
   # Achtung: `--tools` ist eine Allowlist – MCP-Tools müssen dort genannt werden, sonst sind sie
   # nicht direkt deklariert (ohne `--tools` sind sie es).
+  # Eigenes Konfigurationsverzeichnis für die Agenten (PI_CODING_AGENT_DIR): ~/.pi/tikitaka-agent statt ~/.pi/agent.
+  # Damit sehen sie weder deine globalen MCP-Server (z.B. tikitaka-coach) noch Extensions oder deine Sessions.
+  # models.json und auth.json werden aus ~/.pi/agent verlinkt, damit Modelle und Logins gleich bleiben.
   pi:
     cmd: [pi, -p, "{prompt}"]
     model_args: [--model, "{model}"]
@@ -126,6 +131,8 @@ harnesses:
     resume_args: [--session-id, "{session_uuid}"]
     write_args: [--approve]
     readonly_args: [--approve, --tools, "read,grep,find,ls,mcp__tikitaka__*"]
+    agent_home: { dir: ~/.pi/tikitaka-agent, link_from: ~/.pi/agent, link: [models.json, auth.json] }
+    env: { PI_CODING_AGENT_DIR: "{agent_home}" }
     mcp_config_file: .pi/mcp.json
     mcp_config_content: "{mcp_pi_config}"
     models_cmd: [sh, -c, "pi --list-models | awk 'NR>1{print $1\"/\"$2}'"]
@@ -136,8 +143,8 @@ harnesses:
 
   # Pi unter macOS-Seatbelt (sandbox-exec): Dateisystem-Isolation pro Agentenaufruf, ohne Proxy und ohne Container.
   # Profil im Repo (sandbox/pi-seatbelt.sb, relativ zur workflow.yaml aufgelöst):
-  #   schreiben nur im Projekt (cwd), in ~/.pi, ~/.cache, ~/.npm und Temp; ~/.pi/agent/auth.json schreibgeschützt
-  #   lesen überall außer ~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh
+  #   schreiben nur im Projekt (cwd), in ~/.pi/tikitaka-agent, ~/.cache, ~/.npm und Temp; auth.json schreibgeschützt
+  #   lesen überall außer ~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh, ~/.pi/agent/mcp.json, ~/.pi/agent/sessions
   #   Netzwerk ausgehend nur zu localhost und Port 8888 (Hagrid) – Seatbelt filtert nach Port, nicht nach Host
   # Pfade werden aufgelöst (pwd -P), weil Seatbelt echte Pfade vergleicht (/tmp -> /private/tmp).
   pi-seatbelt:
@@ -154,6 +161,8 @@ harnesses:
     resume_args: [--session-id, "{session_uuid}"]
     write_args: [--approve]
     readonly_args: [--approve, --tools, "read,grep,find,ls,mcp__tikitaka__*"]
+    agent_home: { dir: ~/.pi/tikitaka-agent, link_from: ~/.pi/agent, link: [models.json, auth.json] }
+    env: { PI_CODING_AGENT_DIR: "{agent_home}" }
     mcp_config_file: .pi/mcp.json
     mcp_config_content: "{mcp_pi_config}"
     models_cmd: [sh, -c, "pi --list-models | awk 'NR>1{print $1\"/\"$2}'"]

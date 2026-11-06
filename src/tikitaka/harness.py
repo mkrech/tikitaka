@@ -83,6 +83,38 @@ def project_env(cwd: Path, extra: dict[str, str] | None = None) -> dict[str, str
     return {**env, **(extra or {}), "PWD": str(cwd)}
 
 
+def agent_home(harness: dict) -> Path | None:
+    """Eigenes Konfigurationsverzeichnis für die Agenten eines Harness (`agent_home.dir`), falls konfiguriert."""
+    spec = harness.get("agent_home")
+    return Path(os.path.expanduser(str(spec["dir"]))) if spec and spec.get("dir") else None
+
+
+def ensure_agent_home(harness: dict) -> Path | None:
+    """Legt `agent_home.dir` an und verlinkt die Dateien aus `agent_home.link` aus `agent_home.link_from`
+    (z.B. models.json und auth.json aus ~/.pi/agent). Vorhandene Dateien bleiben unberührt."""
+    home = agent_home(harness)
+    if home is None:
+        return None
+    spec = harness["agent_home"]
+    home.mkdir(parents=True, exist_ok=True)
+    source = Path(os.path.expanduser(str(spec["link_from"]))) if spec.get("link_from") else None
+    for name in spec.get("link") or []:
+        target = home / name
+        if source is not None and not target.exists() and not target.is_symlink():
+            target.symlink_to(source / name)
+    return home
+
+
+def harness_env(harness: dict) -> dict[str, str]:
+    """Umgebungsvariablen aus `env` im Harness (~ und {agent_home} aufgelöst); legt agent_home bei Bedarf an."""
+    env = harness.get("env") or {}
+    if not env:
+        return {}
+    home = ensure_agent_home(harness)
+    subst = {"{agent_home}": str(home or "")}
+    return {key: os.path.expanduser(_substitute(value, subst)) for key, value in env.items()}
+
+
 def can_continue(harness: dict) -> bool:
     return bool(harness.get("resume_args"))
 
@@ -194,7 +226,7 @@ def run_agent(
     proc = subprocess.Popen(
         cmd,
         cwd=cwd,
-        env=project_env(cwd, {**env, **mcp_env(harness, mcp)}),
+        env=project_env(cwd, {**harness_env(harness), **env, **mcp_env(harness, mcp)}),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
