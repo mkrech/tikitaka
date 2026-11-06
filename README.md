@@ -48,7 +48,7 @@ uv run tikitaka resume ../tikitaka-smoke --change add-hello
 # Show the runs of a project
 uv run tikitaka status ../tikitaka-smoke
 
-# Coach MCP server (stdio) for Claude Code / OpenCode – see "Coach" below for registering it
+# Coach MCP server (stdio) for Pi / Claude Code / OpenCode – see "Coach" below for registering it
 uv run tikitaka coach
 ```
 
@@ -68,12 +68,12 @@ uv run tikitaka doctor --probe       # additionally sends every model one tiny r
 `run` and `resume` check the model IDs against the harness (`models_cmd`, e.g. `opencode models` or `pi --list-models`) before they
 start and stop with suggestions when one is unknown (`--skip-preflight` to bypass).
 
-Roles and harnesses are configured in [workflow.yaml](workflow.yaml). Switching the combination = changing a single line:
+Roles and harnesses are configured in [workflow.yaml](workflow.yaml). Switching the combination = editing the harness (and model) per role:
 
 ```yaml
 agents:
-  spec_builder:  { harness: claude,   prompt: prompts/spec-builder.md }
-  spec_reviewer: { harness: opencode, prompt: prompts/spec-reviewer.md, readonly: true }
+  spec_builder:  { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-builder.md }
+  spec_reviewer: { harness: pi-srt, model: "custom-openai/DeepSeek-V4.1-Flash-1017", prompt: prompts/spec-reviewer.md, readonly: true }
 ```
 
 The prompts for the four roles live in [prompts/](prompts/).
@@ -82,10 +82,10 @@ The prompts for the four roles live in [prompts/](prompts/).
 
 | Harness | Command | Notes |
 |---|---|---|
-| `claude` | `claude -p` | MCP via `--mcp-config`, sessions via `--session-id`/`--resume` |
-| `opencode` | `opencode run` | background service, so MCP comes from a project file (see below) |
+| `pi-srt` | `srt --settings … pi -p` | Pi inside the srt sandbox (see below) |
 | `pi` | `pi -p` | no background service, whole agent in the subprocess |
-| `pi-srt` | `srt --settings … pi -p` | same as `pi`, plus sandbox (see below) |
+| `opencode` | `opencode run` | background service, so MCP comes from a project file (see below) |
+| `claude` | `claude -p` | MCP via `--mcp-config`, sessions via `--session-id`/`--resume` |
 | `kiro` | `kiro-cli chat --no-interactive` | flags may differ between Kiro versions |
 
 **Pi specifics** (`pi`, `pi-srt`):
@@ -198,7 +198,8 @@ reviewer diff.
 
 Builders and reviewers report their results through the MCP server `tikitaka`
 ([mcp_server.py](src/tikitaka/mcp_server.py)) instead of a JSON block in the text. tikitaka starts
-it for each agent invocation and registers it with the harness (claude: `--mcp-config`; OpenCode: see below).
+it for each agent invocation and registers it with the harness (Pi: `.pi/mcp.json`; OpenCode: see below;
+claude: `--mcp-config`).
 The tool arguments are schema-checked – an invalid `verdict` or a
 wrong `severity` is rejected by the server immediately and the agent corrects itself.
 
@@ -231,10 +232,10 @@ file is never overwritten. The server reads step and role from `<run>/mcp/curren
 Note that `--tools` is an allowlist: an MCP tool that no entry names is not declared, so the read-only harness lists
 `mcp__tikitaka__*` explicitly.
 
-### Coach: steering tikitaka from Claude Code or OpenCode
+### Coach: steering tikitaka from Pi, Claude Code or OpenCode
 
 `tikitaka coach` is a second MCP server – for **you** instead of for the agents. In a
-Claude Code or OpenCode session it lets you ask things like "How is calculator-4 doing?", "What is waiting at the gate?" or "Start a run
+Pi, Claude Code or OpenCode session it lets you ask things like "How is calculator-4 doing?", "What is waiting at the gate?" or "Start a run
 for …". The server provides facts from the run files; interpretation is up to the model of your session.
 
 | Tool | Purpose |
@@ -253,10 +254,10 @@ for …". The server provides facts from the run files; interpretation is up to 
 Background runs write their output to `<run>/orchestrator.log`. Registering it (adjust the paths):
 
 ```bash
-claude mcp add tikitaka-coach -- uv run --directory /path/to/tikitaka tikitaka --config /path/to/tikitaka/workflow.yaml coach
+pi mcp add tikitaka-coach -- uv run --directory /path/to/tikitaka tikitaka --config /path/to/tikitaka/workflow.yaml coach
 ```
 
-OpenCode (`~/.config/opencode/opencode.jsonc`):
+Claude Code uses `claude mcp add tikitaka-coach -- …` with the same command. OpenCode (`~/.config/opencode/opencode.jsonc`):
 
 ```jsonc
 "mcp": {
