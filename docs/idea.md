@@ -1,4 +1,4 @@
-Ich möchte ein Agent Flow einrichten. Um Programme zu schreiben. Mit zwei unterschiedlichen Agenten in unterschiedlichen oder gleichen Harnesses. Z.B. Claude Code und Opencode. Kiro und Opencode, Opencode und Opencode, etc. 
+Ich möchte ein Agent Flow einrichten. Um Programme zu schreiben. Mit zwei unterschiedlichen Agenten in unterschiedlichen oder gleichen Harnesses. Z.B. Pi und Opencode. Kiro und Opencode, Opencode und Opencode, etc. 
 
 Builder agents und Reviewer agents seriell workstream Agents. Der Reviewer über gibt dem Builder sein Review und Builder fixed. 2 Runden wenn es dann ein conflict gibt an mich melden.
 

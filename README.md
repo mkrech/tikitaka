@@ -1,7 +1,7 @@
 # tikitaka
 
 Orchestrator for a **builder/reviewer workflow** with coding agents in arbitrary harnesses
-(Claude Code, OpenCode, Kiro, …), **OpenSpec** for the specification and **human gates**.
+(Pi, OpenCode, Kiro, …), **OpenSpec** for the specification and **human gates**.
 
 ```
 Spec builder ⇄ Spec reviewer (max. 2 rounds)  ──▶  HUMAN GATE spec
@@ -48,7 +48,7 @@ uv run tikitaka resume ../tikitaka-smoke --change add-hello
 # Show the runs of a project
 uv run tikitaka status ../tikitaka-smoke
 
-# Coach MCP server (stdio) for Pi / Claude Code / OpenCode – see "Coach" below for registering it
+# Coach MCP server (stdio) for Pi / OpenCode – see "Coach" below for registering it
 uv run tikitaka coach
 ```
 
@@ -85,7 +85,6 @@ The prompts for the four roles live in [prompts/](prompts/).
 | `pi-srt` | `srt --settings … pi -p` | Pi inside the srt sandbox (see below) |
 | `pi` | `pi -p` | no background service, whole agent in the subprocess |
 | `opencode` | `opencode run` | background service, so MCP comes from a project file (see below) |
-| `claude` | `claude -p` | MCP via `--mcp-config`, sessions via `--session-id`/`--resume` |
 | `kiro` | `kiro-cli chat --no-interactive` | flags may differ between Kiro versions |
 
 **Pi specifics** (`pi`, `pi-srt`):
@@ -198,8 +197,7 @@ reviewer diff.
 
 Builders and reviewers report their results through the MCP server `tikitaka`
 ([mcp_server.py](src/tikitaka/mcp_server.py)) instead of a JSON block in the text. tikitaka starts
-it for each agent invocation and registers it with the harness (Pi: `.pi/mcp.json`; OpenCode: see below;
-claude: `--mcp-config`).
+it for each agent invocation and registers it with the harness (Pi: `.pi/mcp.json`; OpenCode: see below).
 The tool arguments are schema-checked – an invalid `verdict` or a
 wrong `severity` is rejected by the server immediately and the agent corrects itself.
 
@@ -225,18 +223,18 @@ and rejects the wrong tool for the role. In OpenCode's Code Mode the agent finds
 `tools.tikitaka.submit_review(...)` inside `execute`; the prompts say so.
 
 **Pi:** Pi has no background service – the agent runs entirely in the subprocess tikitaka starts. Its MCP servers come from
-`<project>/.pi/mcp.json`, using the same `mcpServers` format as Claude. Pi only loads that file once the project is trusted,
+`<project>/.pi/mcp.json`, using the `mcpServers` format. Pi only loads that file once the project is trusted,
 so the harness runs with `--approve`; `exposure: "direct"` puts the tools straight into the model's tool list instead of
 behind a codemode script. The file is excluded locally via `.git/info/exclude`, removed when the run ends, and a foreign
 file is never overwritten. The server reads step and role from `<run>/mcp/current.json`, exactly like OpenCode's.
 Note that `--tools` is an allowlist: an MCP tool that no entry names is not declared, so the read-only harness lists
 `mcp__tikitaka__*` explicitly.
 
-### Coach: steering tikitaka from Pi, Claude Code or OpenCode
+### Coach: steering tikitaka from Pi or OpenCode
 
 `tikitaka coach` is a second MCP server – for **you** instead of for the agents. In a
-Pi, Claude Code or OpenCode session it lets you ask things like "How is calculator-4 doing?", "What is waiting at the gate?" or "Start a run
-for …". The server provides facts from the run files; interpretation is up to the model of your session.
+Pi or OpenCode session it lets you ask things like "How is calculator-4 doing?". The server provides facts from the run files;
+interpretation is up to the model of your session.
 
 | Tool | Purpose |
 |---|---|
@@ -257,7 +255,7 @@ Background runs write their output to `<run>/orchestrator.log`. Registering it (
 pi mcp add tikitaka-coach -- uv run --directory /path/to/tikitaka tikitaka --config /path/to/tikitaka/workflow.yaml coach
 ```
 
-Claude Code uses `claude mcp add tikitaka-coach -- …` with the same command. OpenCode (`~/.config/opencode/opencode.jsonc`):
+OpenCode (`~/.config/opencode/opencode.jsonc`):
 
 ```jsonc
 "mcp": {
@@ -272,7 +270,7 @@ Claude Code uses `claude mcp add tikitaka-coach -- …` with the same command. O
 ### Robustness
 
 - **Missing review JSON:** First only the result is requested again (a matter of seconds), only then is the review repeated.
-  If the harness has `resume_args` (opencode, claude, pi), the reviewer's session is resumed through its own ID
+  If the harness has `resume_args` (opencode, pi), the reviewer's session is resumed through its own ID
   for this – it still has its entire review in context, and a parallel session in the same directory stays
   untouched. Otherwise it receives the end of its answer.
 - **Contradictory review:** `approve` with blocking findings, or `changes_requested` without any, leads to a

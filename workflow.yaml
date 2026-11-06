@@ -1,7 +1,7 @@
 # tikitaka – Workflow-Konfiguration
 #
 # Rollen -> Harness. Kombinationen frei tauschbar, z.B.
-#   claude + opencode, opencode + opencode, kiro + opencode ...
+#   pi-srt + opencode, opencode + opencode, kiro + opencode ...
 
 agents:
   # Builder (Spec + Code): Pi mit DeepSeek V4.1 (Hagrid) · Reviewer: dasselbe Modell.
