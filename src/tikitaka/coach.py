@@ -53,7 +53,47 @@ def _state(run_dir: Path) -> dict:
     return json.loads((run_dir / "state.json").read_text())
 
 
+# So trägt sich ein laufender Orchestrator in die Projektsperre .tikitaka/lock ein (orchestrator.Orchestrator.run)
+LOCK_HOLDER = re.compile(r"^(?P<change>\S+), PID (?P<pid>\d+)$")
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _is_tikitaka_process(pid: int) -> bool:
+    """Gehört die PID (noch) zu tikitaka? Schützt vor einer wiederverwendeten PID aus einem alten Lock-Eintrag."""
+    try:
+        cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "tikitaka" in cmd or "agent-tandem" in cmd
+
+
+def _lock_pid(run_dir: Path) -> int | None:
+    """PID des Orchestrators laut Projektsperre – auch für Läufe, die per CLI im Terminal gestartet wurden.
+    Der Eintrag bleibt nach dem Ende stehen, deshalb zählt er nur, solange der Prozess lebt."""
+    lock = run_dir.parent.parent.parent / ".tikitaka" / "lock"
+    try:
+        match = LOCK_HOLDER.match(lock.read_text().strip())
+    except OSError:
+        return None
+    if not match or match["change"] != run_dir.name:
+        return None
+    pid = int(match["pid"])
+    return pid if _process_alive(pid) and _is_tikitaka_process(pid) else None
+
+
 def _pid_alive(run_dir: Path) -> int | None:
+    """PID des laufenden Orchestrators: aus orchestrator.pid (vom Coach gestartet), sonst aus der Projektsperre."""
+    return _pid_file_alive(run_dir) or _lock_pid(run_dir)
+
+
+def _pid_file_alive(run_dir: Path) -> int | None:
     pid_file = run_dir / PID_FILE
     if not pid_file.exists():
         return None
@@ -67,11 +107,7 @@ def _pid_alive(run_dir: Path) -> int | None:
             return None
     except ChildProcessError:
         pass  # nicht unser Kindprozess (z.B. aus einer früheren Coach-Sitzung)
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
-        return None
-    return pid
+    return pid if _process_alive(pid) else None
 
 
 def list_runs(project: str | Path) -> list[dict]:

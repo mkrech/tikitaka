@@ -201,6 +201,32 @@ def test_stop_run_ends_agent_and_children_before_guard(tmp_path: Path) -> None:
     assert state["guard"][0]["files"] == ["junk.txt"]
 
 
+def test_cli_started_run_is_seen_and_stoppable(tmp_path: Path) -> None:
+    """Ein Lauf aus dem Terminal (`tikitaka run`, ohne orchestrator.pid) wird über die Projektsperre erkannt."""
+    config = write_config(tmp_path)
+    project = tmp_path / "proj"
+    project.mkdir()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "tikitaka.cli", "--config", str(config), "run", str(project), "--change", "c", "--idea", "x"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    try:
+        run_dir = project / ".tikitaka/runs/c"
+        wait_until(lambda: (run_dir / "state.json").exists() and coach.status(project, "c")["running"])
+        assert not (run_dir / coach.PID_FILE).exists()
+        assert coach.list_runs(project)[0]["running"]
+        assert coach._lock_pid(project / ".tikitaka/runs/anderer") is None  # Sperre gehört zu Change c
+
+        assert coach.stop_run(project, "c")["pid"] == proc.pid
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    # Der Eintrag in .tikitaka/lock bleibt stehen, zählt aber nicht mehr
+    assert "PID" in (project / ".tikitaka/lock").read_text()
+    assert not coach.status(project, "c")["running"]
+
+
 def test_project_config_rejects_bad_agent_overrides(tmp_path: Path) -> None:
     config = write_config(tmp_path)
     (tmp_path / ".tikitaka.yaml").write_text("agents:\n  code_builder: { prompt: x.md }\n")
